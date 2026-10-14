@@ -1,12 +1,14 @@
 import React, { useEffect, useState } from "react";
 import { api } from "./api.js";
 import LiveOps from "./views/LiveOps.jsx";
+import LiveVoice from "./views/LiveVoice.jsx";
 import ControlTower from "./views/ControlTower.jsx";
 import Registry from "./views/Registry.jsx";
 import Learning from "./views/Learning.jsx";
 import Knowledge from "./views/Knowledge.jsx";
 
 const TABS = [
+  ["voice", "Live Voice"],
   ["ops", "Live Ops"],
   ["tower", "Control Tower"],
   ["registry", "Agent Registry"],
@@ -45,11 +47,13 @@ export default function App() {
             <span className={"dot" + (live ? "" : " sim")} />
             {live ? `LLM: ${brains.join(" + ")}` : "LLM: simulated"}
             {" · "}emb: {health.embeddings} · db: {health.db?.mode}
+            {health.observability?.configured ? " · braintrust ✓" : ""}
           </span>
         )}
       </header>
 
       <main className="main">
+        {tab === "voice" && <LiveVoice />}
         {tab === "ops" && <LiveOps onChange={refresh} />}
         {tab === "tower" && <ControlTower nonce={nonce} />}
         {tab === "registry" && <Registry nonce={nonce} />}

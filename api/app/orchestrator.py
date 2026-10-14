@@ -13,7 +13,7 @@ Canonical demo call (Liberty Mutual auto accident):
   -> Knowledge Retrieval, Next Best Action, Summarization also fire & are scored
 """
 from typing import Dict
-from . import agents, governance, learning
+from . import agents, governance, learning, observability
 from .stores import State
 
 
@@ -34,6 +34,7 @@ def run_call(state: State, policy_id: str = "LM-AUTO-88123", brain: str = "") ->
     loss = dict(DEFAULT_LOSS)
     steps = []
     step_n = [0]
+    bt_events = []  # Braintrust observability batch (flushed at end, if keyed)
     va_version = state.learning.current_version("VA")
     va_addendum = state.learning.prompt_addendum("VA")
 
@@ -52,6 +53,15 @@ def run_call(state: State, policy_id: str = "LM-AUTO-88123", brain: str = "") ->
             result.get("note", result.get("metric", "")),
             metric=result.get("metric", ""), score=result.get("score"),
             passed=result.get("pass"), step=step_n[0])
+        bt_events.append(observability.event(
+            agent=result["agent"], action="governance_eval",
+            detail=result.get("note", result.get("metric", "")),
+            metric=result.get("metric", ""), score=result.get("score"),
+            passed=result.get("pass"),
+            metadata={"policy_id": policy_id, "conversation_id": conv_id,
+                      "step": step_n[0],
+                      "violation": bool(result.get("violation")),
+                      "guardrail": (result.get("violation") or {}).get("guardrail", "")}))
         v = result.get("violation")
         if v:
             rec = state.operational.add_violation({
@@ -190,6 +200,9 @@ def run_call(state: State, policy_id: str = "LM-AUTO-88123", brain: str = "") ->
          governance_checks=[{"agent": "SUM", "label": "Faithful to transcript, PII masked",
                              "pass": summ_eval["pass"], "score": summ_eval["score"]}])
 
+    # flush governance traces to Braintrust (no-op unless BRAINTRUST_API_KEY set)
+    observability.log_batch(bt_events)
+
     return {
         "conversation_id": conv_id,
         "claim_id": claim["claim_id"],
@@ -198,6 +211,7 @@ def run_call(state: State, policy_id: str = "LM-AUTO-88123", brain: str = "") ->
         "grounded": va_eval["pass"],
         "brain": brain or "default",
         "llm_source": va["source"],
+        "observability": observability.status(),
         "steps": steps,
         "counts": {
             "violations": len([v for v in state.operational.violations if v["conversation_id"] == conv_id]),

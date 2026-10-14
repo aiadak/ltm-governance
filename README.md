@@ -21,8 +21,16 @@ still runs end-to-end with no keys at all (simulated brain + deterministic embed
 3. **Learning Studio** — the continuous-learning loop: detected error → root cause → human correction
    → proposed fix → regression test → approved new version. **Learning proposes; governance approves.**
 
-Plus **Agent Registry** (every agent/guardian, owner, risk, metric, version) and **Knowledge Base**
-(feed documents with role-based retrieval; test what each agent can see).
+Plus **Live Voice** (talk to the Voice AI out loud via OpenAI Realtime over WebRTC — grounded in the
+selected policy), **Agent Registry** (every agent/guardian, owner, risk, metric, version) and
+**Knowledge Base** (feed documents with role-based retrieval; test what each agent can see).
+
+### Live Voice
+The **Live Voice** tab opens a real spoken call with the claims Voice AI. The backend mints a
+short-lived OpenAI Realtime ephemeral token (`/api/realtime/token`, model `gpt-realtime-2.1`); the
+browser streams mic audio straight to OpenAI over WebRTC and plays the reply. Requires
+`OPENAI_API_KEY`; without it the tab shows how to enable it. The agent's instructions are built
+server-side from the chosen policy's coverages, so it only states coverage that policy actually has.
 
 ## Architecture
 
@@ -35,6 +43,9 @@ Plus **Agent Registry** (every agent/guardian, owner, risk, metric, version) and
   - **Learning** — feedback items, synthetic evaluation cases, agent versions, deployment decisions.
 - **Storage:** in-memory by default (zero-config). Set `DATABASE_URL` to use **Postgres + pgvector**;
   the full schema is in `api/app/db.py`.
+- **Observability (optional):** set `BRAINTRUST_API_KEY` to stream every governance evaluation,
+  violation and intervention to **Braintrust** as log events (scores + metadata). This bolts on top
+  of the self-contained governance engine — with no key it is a complete no-op (`api/app/observability.py`).
 - **No fine-tuning.** "Learning" = prompt/guardrail + retrieval updates, gated by a regression test.
 
 ## Run locally

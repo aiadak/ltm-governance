@@ -19,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.stores import get_state, reset_state
 from app.agents import AGENTS, A
 from app.governance import GOV_ACTORS
-from app import orchestrator, learning, llm, db
+from app import orchestrator, learning, llm, db, observability
 
 app = FastAPI(title="LTM Governed Contact Center")
 app.add_middleware(
@@ -87,6 +87,8 @@ def health():
     state = get_state()
     return {"ok": True, "llm": llm.llm_status(), "embeddings": state.embed_mode,
             "db": db.db_status(),
+            "observability": observability.status(),
+            "realtime": bool(os.environ.get("OPENAI_API_KEY")),
             "data": {"documents": len(state.knowledge.docs),
                      "policies": len(state.operational.policies)}}
 
@@ -198,6 +200,89 @@ def approve_route(imp_id: str):
 def reset_route():
     reset_state()
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Live voice — OpenAI Realtime (WebRTC). The browser streams mic audio directly
+# to OpenAI with a short-lived ephemeral key minted here; the standard API key
+# never leaves the server. We also build the grounded agent instructions from
+# the selected policy so the Voice AI only states coverage on that policy.
+# ---------------------------------------------------------------------------
+REALTIME_MODEL = os.environ.get("OPENAI_REALTIME_MODEL", "gpt-realtime-2.1")
+REALTIME_VOICE = os.environ.get("OPENAI_REALTIME_VOICE", "marin")
+
+
+def build_voice_instructions(state, policy_id: str) -> str:
+    policy = state.operational.get_policy(policy_id)
+    cov = policy.get("coverages", {}) if policy else {}
+    rr = cov.get("rental_reimbursement", {})
+    rental = (f"INCLUDED (${rr.get('daily_limit')}/day up to {rr.get('max_days')} days)"
+              if rr.get("included") else "NOT included")
+    coll = cov.get("collision", {})
+    comp = cov.get("comprehensive", {})
+    return (
+        "You are a Liberty Mutual auto-claims Voice AI agent on a phone call. This is a "
+        "SYNTHETIC demo with fictional data — no real customers. Be warm, concise and natural; "
+        "speak in short spoken sentences.\n\n"
+        f"The caller is {policy.get('holder','the policyholder')}, policy {policy_id}, "
+        f"vehicle {policy.get('vehicle','on file')}.\n"
+        "VERIFIED POLICY COVERAGES (this is the single source of truth — never state a coverage "
+        "that is not listed here):\n"
+        f"- Collision: {'included, deductible $'+str(coll.get('deductible')) if coll.get('included') else 'not included'}\n"
+        f"- Comprehensive: {'included, deductible $'+str(comp.get('deductible')) if comp.get('included') else 'not included'}\n"
+        f"- Rental reimbursement: {rental}\n"
+        f"- Roadside assistance: {'included' if cov.get('roadside',{}).get('included') else 'not included'}\n\n"
+        "RULES (governance guardrails):\n"
+        "1. Only state a coverage as covered if it is listed above. If a caller asks about rental "
+        "and it is NOT included, say plainly it is not covered and offer alternatives (out of "
+        "pocket, preferred-vendor discount). Never promise coverage the policy does not have.\n"
+        "2. Never approve or promise a settlement or payout amount — route money decisions to a "
+        "human adjuster.\n"
+        "3. For a new loss, take the FNOL: ask what happened, injuries, whether the car is "
+        "drivable, then say you've opened a claim.\n"
+        "4. If anyone is injured, say a human adjuster will be assigned.\n"
+        "Open by greeting the caller and asking how you can help with their claim today."
+    )
+
+
+@app.post("/api/realtime/token")
+def realtime_token(body: dict = Body(default={})):
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        return {"error": "OPENAI_API_KEY is not set on the server. Add it in Vercel "
+                "Environment Variables and redeploy to enable live voice."}
+    state = get_state()
+    policy_id = body.get("policy_id", "LM-AUTO-88123")
+    instructions = build_voice_instructions(state, policy_id)
+    import json as _json
+    import urllib.request as _url
+    payload = _json.dumps({
+        "session": {
+            "type": "realtime",
+            "model": REALTIME_MODEL,
+            "audio": {"output": {"voice": REALTIME_VOICE}},
+        }
+    }).encode()
+    req = _url.Request(
+        "https://api.openai.com/v1/realtime/client_secrets",
+        data=payload,
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with _url.urlopen(req, timeout=20) as resp:
+            data = _json.loads(resp.read().decode())
+    except Exception as e:
+        detail = ""
+        try:
+            detail = e.read().decode()  # type: ignore[attr-defined]
+        except Exception:
+            detail = str(e)
+        return {"error": "Could not mint a realtime session.", "detail": detail[:500]}
+    value = data.get("value") or (data.get("client_secret") or {}).get("value")
+    return {"value": value, "expires_at": data.get("expires_at"),
+            "model": REALTIME_MODEL, "voice": REALTIME_VOICE,
+            "instructions": instructions, "policy_id": policy_id}
 
 
 # convenience root

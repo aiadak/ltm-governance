@@ -26,4 +26,6 @@ export const api = {
   runRegression: (id) => j(`/api/learning/${id}/regression`, { method: "POST" }),
   approve: (id) => j(`/api/learning/${id}/approve`, { method: "POST" }),
   reset: () => j("/api/reset", { method: "POST" }),
+  realtimeToken: (policy_id) =>
+    j("/api/realtime/token", { method: "POST", body: JSON.stringify({ policy_id }) }),
 };
