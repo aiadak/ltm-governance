@@ -235,7 +235,7 @@ def build_voice_instructions(state, policy_id: str) -> str:
               if rr.get("included") else "NOT included")
     coll = cov.get("collision", {})
     comp = cov.get("comprehensive", {})
-    return (
+    instr = (
         "You are a Liberty Mutual auto-claims Voice AI agent on a phone call. This is a "
         "SYNTHETIC demo with fictional data — no real customers. Be warm, concise and natural; "
         "speak in short spoken sentences.\n\n"
@@ -266,6 +266,15 @@ def build_voice_instructions(state, policy_id: str) -> str:
         "Keep talking naturally while you use tools. Open by greeting the caller and asking how "
         "you can help with their claim today."
     )
+    # Fold in what the Voice AI has LEARNED — the supervisor-approved prompt
+    # guardrails from the Learning Studio (its accumulated "memory"). This is how
+    # training the Voice AI reaches the live spoken call, not just the scripted demo.
+    learned = state.learning.prompt_addendum("VA")
+    if learned:
+        ver = state.learning.current_version("VA")
+        instr += (f"\n\nLEARNED GUARDRAILS (Voice AI v{ver}, from supervisor-approved "
+                  f"corrections — follow these too):\n{learned}")
+    return instr
 
 
 # Tool (function) definitions exposed to the Realtime voice agent. When the model
@@ -341,7 +350,30 @@ def realtime_token(body: dict = Body(default={})):
     return {"value": value, "expires_at": data.get("expires_at"),
             "model": REALTIME_MODEL, "voice": REALTIME_VOICE,
             "instructions": instructions, "policy_id": policy_id,
-            "tools": VOICE_TOOLS}
+            "tools": VOICE_TOOLS, "va_version": state.learning.current_version("VA")}
+
+
+DECL_DOC = {"LM-AUTO-88123": "POL-88123-DEC", "LM-AUTO-55900": "POL-55900-DEC"}
+
+
+def _doc_sources(state, ids):
+    """Resolve doc ids to {doc_id,title} citations the UI can deep-link to."""
+    out = []
+    for i in ids:
+        d = state.knowledge.docs.get(i)
+        if d:
+            out.append({"doc_id": i, "title": d["title"]})
+    return out
+
+
+@app.get("/api/document/{doc_id}")
+def document_route(doc_id: str):
+    state = get_state()
+    d = state.knowledge.docs.get(doc_id)
+    if not d:
+        return {"error": "document not found"}
+    return {"doc_id": doc_id, "title": d["title"], "category": d["category"],
+            "roles": d["roles"], "version": d["version"], "text": d["text"]}
 
 
 @app.post("/api/voice/tool")
@@ -367,8 +399,12 @@ def voice_tool(body: dict = Body(default={})):
         pv = agents.policy_verification(policy, args.get("coverage", "rental"))
         ev = governance.evaluate_policy_verification(pv)
         out = {"covered": pv["covered"], "detail": pv["detail"], "source": pv["source"]}
+        src_ids = [DECL_DOC.get(policy_id)] if DECL_DOC.get(policy_id) else []
+        if args.get("coverage") == "rental":
+            src_ids.append("END-RENT-30")
         disp = {"agent": "PV", "detail": pv["detail"], "metric": "Coverage correctness",
                 "score": ev["score"], "pass": True,
+                "sources": _doc_sources(state, src_ids),
                 "gov": {"label": ("Coverage verified — covered" if pv["covered"]
                                   else "Coverage verified — NOT on policy"), "pass": True}}
     elif name == "create_claim":
@@ -378,6 +414,7 @@ def voice_tool(body: dict = Body(default={})):
         out = {"claim_id": claim["claim_id"]}
         disp = {"agent": "VA", "detail": f"Claim {claim['claim_id']} opened (FNOL)",
                 "metric": "Accuracy & tone", "score": 0.96, "pass": True,
+                "sources": _doc_sources(state, ["SOP-FNOL"]),
                 "gov": {"label": "Claim created, no coverage promised", "pass": True}}
     elif name == "assess_severity":
         loss = {"injury": bool(args.get("injury")), "drivable": args.get("drivable", True),
@@ -387,6 +424,7 @@ def voice_tool(body: dict = Body(default={})):
         out = {"severity": tr["severity"], "adjuster": tr["adjuster"]}
         disp = {"agent": "TR", "detail": tr["detail"], "metric": "Severity accuracy",
                 "score": ev["score"], "pass": ev["pass"],
+                "sources": _doc_sources(state, ["SOP-TRIAGE"]),
                 "gov": {"label": f"Severity {tr['severity']} assessed", "pass": ev["pass"]}}
     elif name == "recommend_next_action":
         sev = args.get("severity", "LOW")
@@ -396,6 +434,7 @@ def voice_tool(body: dict = Body(default={})):
         out = {"steps": nba["steps"], "approves_payout": False}
         disp = {"agent": "NBA", "detail": "; ".join(nba["steps"]), "metric": "Recommendation correctness",
                 "score": ev["score"], "pass": ev["pass"],
+                "sources": _doc_sources(state, ["COMP-NO-AUTO-PAYOUT", "KB-NEXT-STEPS"]),
                 "gov": {"label": "Compliant — no payout approved", "pass": ev["pass"]}}
     elif name == "search_knowledge":
         docs = state.knowledge.retrieve(args.get("query", ""), "KR", 2)
@@ -404,6 +443,7 @@ def voice_tool(body: dict = Body(default={})):
         out = {"article": top.get("title"), "text": top.get("text", "")[:400]}
         disp = {"agent": "KR", "detail": f"Retrieved {top.get('doc_id')} ({top.get('title')})",
                 "metric": "Retrieval accuracy", "score": ev["score"], "pass": ev["pass"],
+                "sources": _doc_sources(state, [d["doc_id"] for d in docs[:2]]),
                 "gov": {"label": "Article matches the situation", "pass": ev["pass"]}}
     else:
         return {"output": json_dumps({"error": "unknown tool"}), "display": None}

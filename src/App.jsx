@@ -6,6 +6,7 @@ import ControlTower from "./views/ControlTower.jsx";
 import Registry from "./views/Registry.jsx";
 import Learning from "./views/Learning.jsx";
 import Knowledge from "./views/Knowledge.jsx";
+import DocViewer from "./components/DocViewer.jsx";
 
 const TABS = [
   ["voice", "Live Voice"],
@@ -60,6 +61,7 @@ export default function App() {
         {tab === "learn" && <Learning nonce={nonce} onChange={refresh} />}
         {tab === "kb" && <Knowledge nonce={nonce} />}
       </main>
+      <DocViewer />
     </div>
   );
 }

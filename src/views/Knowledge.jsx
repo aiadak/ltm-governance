@@ -126,7 +126,7 @@ export default function Knowledge({ nonce }) {
           <tbody>
             {data.documents.map((d) => (
               <tr key={d.doc_id}>
-                <td className="mono">{d.doc_id}</td>
+                <td><a className="cite" href={`#doc=${d.doc_id}`}>{d.doc_id}</a></td>
                 <td>{d.title}</td>
                 <td className="muted">{d.category}</td>
                 <td><div className="pill-roles">{d.roles.map((r) => <span key={r} className="role-pill">{r}</span>)}</div></td>

@@ -15,6 +15,7 @@ export const api = {
   agents: () => j("/api/agents"),
   policies: () => j("/api/policies"),
   documents: () => j("/api/documents"),
+  document: (id) => j(`/api/document/${id}`),
   addDocument: (doc) => j("/api/documents", { method: "POST", body: JSON.stringify(doc) }),
   retrieve: (query, role, k = 3) =>
     j("/api/retrieve", { method: "POST", body: JSON.stringify({ query, role, k }) }),

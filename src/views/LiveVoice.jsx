@@ -1,5 +1,22 @@
 import React, { useEffect, useRef, useState } from "react";
 import { api } from "../api.js";
+import { Sources } from "../components/DocViewer.jsx";
+
+// What to say, in order, to trigger each agent — shown on screen as a talk track.
+const SCRIPT = [
+  { say: "Hi, I was just in a car accident — I was rear-ended at a stoplight.",
+    meta: "Voice AI greets, starts intake" },
+  { say: "The front bumper and hood are damaged, but no one's hurt and I can still drive it.",
+    meta: "→ create_claim (opens a claim) + assess_severity (Triage)" },
+  { say: "Will my rental car be covered while it's in the shop?",
+    meta: "→ verify_policy_coverage (Policy Verification) → governance confirms grounded" },
+  { say: "What are my next steps?",
+    meta: "→ recommend_next_action (Next Best Action) — refuses any payout" },
+  { say: "Do you have an article explaining how rental coverage works?",
+    meta: "→ search_knowledge (Knowledge Retrieval) pulls the FAQ" },
+  { say: "Can you just approve a $3,000 payout right now?",
+    meta: "Voice AI declines and routes to a human adjuster (guardrail)" },
+];
 
 // Live voice call with the claims Voice AI via OpenAI Realtime (WebRTC).
 // The agent calls REAL supporting agents (Policy Verification, Triage, Next Best
@@ -13,6 +30,7 @@ export default function LiveVoice() {
   const [fires, setFires] = useState([]);
   const [gov, setGov] = useState([]);
   const [available, setAvailable] = useState(null);
+  const [vaVersion, setVaVersion] = useState(null);
 
   const pcRef = useRef(null);
   const dcRef = useRef(null);
@@ -82,6 +100,7 @@ export default function LiveVoice() {
       setError(tok.error || "No session token returned. Is OPENAI_API_KEY set on the server?");
       return;
     }
+    setVaVersion(tok.va_version || 1);
     try {
       const mic = await navigator.mediaDevices.getUserMedia({ audio: true });
       micRef.current = mic;
@@ -170,6 +189,7 @@ export default function LiveVoice() {
         <span className="status-pill" style={{ marginLeft: "auto" }}>
           <span className={"dot" + (live ? "" : " sim")} />
           {live ? "LIVE — speak now" : connecting ? "connecting…" : status === "ended" ? "call ended" : "ready"}
+          {vaVersion ? ` · Voice AI v${vaVersion}` : ""}
         </span>
       </div>
 
@@ -206,6 +226,7 @@ export default function LiveVoice() {
                   </span>
                 </div>
                 <div className="detail">{f.detail}</div>
+                <Sources list={f.sources} />
               </div>
             ))}
           </div>
@@ -226,11 +247,24 @@ export default function LiveVoice() {
       </div>
 
       <div className="card pad" style={{ marginTop: 14 }}>
-        <b style={{ fontSize: 13 }}>Try saying…</b>
-        <span className="muted" style={{ fontSize: 13 }}> "Hi, I was rear-ended, bumper's damaged, no injuries." …then… "Will my rental be covered while it's in the shop?" …then… "Can you just approve a $3,000 payout now?"</span>
-        <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
-          Watch the middle and right panels: Policy Verification fires and governance confirms the rental
-          answer is grounded; Next Best Action refuses to approve a payout — live, while you talk.
+        <div className="row">
+          <h3 style={{ margin: 0 }}>🎬 Demo script — say these in order</h3>
+          <span className="muted" style={{ fontSize: 12 }}>on LM-AUTO-88123 (no rental), each line triggers an agent</span>
+        </div>
+        <div style={{ marginTop: 10 }}>
+          {SCRIPT.map((s, i) => (
+            <div key={i} className="script-step">
+              <div className="script-n">{i + 1}</div>
+              <div>
+                <div className="script-say">"{s.say}"</div>
+                <div className="script-meta">{s.meta}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="muted" style={{ fontSize: 12, marginTop: 10 }}>
+          Each agent that fires shows a <span className="cite" style={{ cursor: "default" }}>DOC-ID</span>{" "}
+          citation — click it to open the exact source document section it used.
         </div>
       </div>
 
