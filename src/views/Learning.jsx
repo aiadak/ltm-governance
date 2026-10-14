@@ -1,17 +1,26 @@
 import React, { useEffect, useState } from "react";
 import { api } from "../api.js";
 
+const STATUS_CLASS = {
+  proposed: "Watch", reviewed: "Watch", tested: "Watch",
+  deployed: "Healthy", rejected: "Flagged", failed: "Flagged",
+};
+
 function Flow({ imp }) {
   const reg = imp.regression || { total: 0, passed: 0 };
-  const tested = imp.status === "tested" || imp.status === "deployed";
+  const reviewed = ["reviewed", "tested", "deployed"].includes(imp.status);
+  const tested = ["tested", "deployed"].includes(imp.status);
   const deployed = imp.status === "deployed";
+  const decision = imp.human_decision?.action;
   const steps = [
     ["1", "Detected error", imp.error, true],
     ["2", "Root cause", imp.root_cause, true],
-    ["3", "Human correction", imp.correction, true],
-    ["4", "Proposed fix", imp.proposed_fix?.addendum, true],
+    ["3", "Proposed fix", imp.proposed_fix?.addendum, true],
+    ["4", "Human review (HITL)",
+      decision ? `${decision.toUpperCase()} by ${imp.human_decision.by}` : "awaiting human decision",
+      reviewed],
     ["5", "Regression test", reg.total ? `${reg.passed}/${reg.total} synthetic cases pass` : "not run yet", tested],
-    ["6", "New version", deployed ? `Voice AI v${imp.deployed_version} deployed` : "awaiting approval", deployed],
+    ["6", "New version", deployed ? `Voice AI v${imp.deployed_version} deployed` : "not yet approved", deployed],
   ];
   return (
     <div className="flow">
@@ -29,33 +38,72 @@ function Flow({ imp }) {
 export default function Learning({ nonce, onChange }) {
   const [data, setData] = useState(null);
   const [busy, setBusy] = useState("");
+  const [editing, setEditing] = useState(null); // improvement id being edited
+  const [draft, setDraft] = useState("");
   const load = () => api.learning().then(setData);
   useEffect(() => { load(); }, [nonce]);
   if (!data) return <div className="empty">Loading learning studio…</div>;
 
   const imps = data.improvements;
+  const vaHist = data.versions?.VA;
 
-  async function doRegression(id) { setBusy(id); await api.runRegression(id); await load(); onChange && onChange(); setBusy(""); }
-  async function doApprove(id) { setBusy(id); await api.approve(id); await load(); onChange && onChange(); setBusy(""); }
+  async function act(fn, id) { setBusy(id); await fn(); await load(); onChange && onChange(); setBusy(""); }
+  const doReview = (id, action, addendum = "") => act(() => api.review(id, action, addendum), id);
+  const doRegression = (id) => act(() => api.runRegression(id), id);
+  const doApprove = (id) => act(() => api.approve(id), id);
+
+  function startEdit(imp) { setEditing(imp.id); setDraft(imp.proposed_fix?.addendum || ""); }
+  async function saveEdit(id) { await doReview(id, "edit", draft); setEditing(null); }
 
   return (
     <div>
       <div className="view-head">
         <h1>Continuous Learning Studio</h1>
-        <p>The closed loop. A human correction becomes a proposed prompt/retrieval fix, is gated by a
-          regression test on synthetic cases, and — only on explicit approval — ships as a new agent
-          version. Learning proposes; governance approves. No model fine-tuning.</p>
+        <p>The closed loop. A detected error becomes a proposed fix, a <b>human</b> accepts / edits /
+          rejects it, a regression test gates it, and only then does it ship as a new agent version.
+          Learning proposes; a human + governance approve. No model fine-tuning.</p>
       </div>
 
       <div className="banner" style={{ marginBottom: 16 }}>
-        Learning is <b>decoupled</b> from governance by design — agents never grade their own homework.
-        The approve step is the governance gate.
+        <b>Human-in-the-loop + decoupled:</b> the system never deploys its own fix. A person must
+        Accept, Edit, or Reject it, and only a human-accepted, regression-passing fix can be deployed.
       </div>
+
+      {/* Recursive learning: version history + accumulated memory */}
+      {vaHist && (
+        <div className="card pad" style={{ marginBottom: 16 }}>
+          <div className="row">
+            <h3 style={{ margin: 0 }}>Voice AI — learning history</h3>
+            <span className="ver" style={{ marginLeft: "auto" }}>current: v{vaHist.version}</span>
+          </div>
+          <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+            <span className="status-tag Healthy">v1 — baseline</span>
+            {(vaHist.history || []).map((h, i) => (
+              <React.Fragment key={i}>
+                <span className="muted">→</span>
+                <span className="status-tag Healthy" title={h.delta || h.addendum}>
+                  v{h.to} — learned fix
+                </span>
+              </React.Fragment>
+            ))}
+          </div>
+          {vaHist.prompt_addendum && (
+            <>
+              <div className="section-title" style={{ fontSize: 13, margin: "14px 0 6px" }}>
+                Accumulated agent memory (applied to the Voice AI)
+              </div>
+              <div className="banner mono" style={{ fontSize: 12, whiteSpace: "pre-wrap", color: "var(--muted)" }}>
+                {vaHist.prompt_addendum}
+              </div>
+            </>
+          )}
+        </div>
+      )}
 
       {imps.length === 0 && (
         <div className="card pad empty">
           No improvements yet. Run the <b>LM-AUTO-88123</b> call in Live Ops — the caught rental
-          over-promise will be captured here as a proposed improvement.
+          over-promise is captured here for human review.
         </div>
       )}
 
@@ -65,10 +113,47 @@ export default function Learning({ nonce, onChange }) {
             <h3 style={{ margin: 0 }}>Improvement {imp.id}</h3>
             <span className="chip agent">{imp.proposed_fix?.target_agent || imp.agent}</span>
             <span className="chip">{imp.guardrail}</span>
-            <span className={"status-tag " + (imp.status === "deployed" ? "Healthy" : imp.status === "tested" ? "Watch" : "Flagged")}
+            <span className={"status-tag " + (STATUS_CLASS[imp.status] || "Watch")}
               style={{ marginLeft: "auto" }}>{imp.status.toUpperCase()}</span>
           </div>
           <Flow imp={imp} />
+
+          {/* HITL review controls */}
+          {imp.status === "proposed" && (
+            <div className="card pad" style={{ marginTop: 14, background: "var(--bg-2)" }}>
+              <div className="row" style={{ marginBottom: editing === imp.id ? 10 : 0 }}>
+                <b style={{ fontSize: 13 }}>👤 Human-in-the-loop review</b>
+                <span className="muted" style={{ fontSize: 12 }}>Accept the proposed fix, edit it, or reject it.</span>
+              </div>
+              {editing === imp.id ? (
+                <div className="field">
+                  <label>Edit the proposed guardrail before approving</label>
+                  <textarea value={draft} onChange={(e) => setDraft(e.target.value)} style={{ minHeight: 90 }} />
+                  <div className="row" style={{ marginTop: 8 }}>
+                    <button className="btn sm" disabled={busy === imp.id} onClick={() => saveEdit(imp.id)}>Save edit &amp; accept</button>
+                    <button className="btn ghost sm" onClick={() => setEditing(null)}>Cancel</button>
+                  </div>
+                </div>
+              ) : (
+                <div className="row">
+                  <button className="btn sm" disabled={busy === imp.id} onClick={() => doReview(imp.id, "accept")}>✓ Accept</button>
+                  <button className="btn ghost sm" disabled={busy === imp.id} onClick={() => startEdit(imp)}>✎ Edit</button>
+                  <button className="btn ghost sm" disabled={busy === imp.id}
+                    style={{ color: "var(--red)", borderColor: "var(--red)" }}
+                    onClick={() => doReview(imp.id, "reject")}>✕ Reject</button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {imp.human_decision && (
+            <div className="row" style={{ marginTop: 12 }}>
+              <span className="pass-badge ok">HITL: {imp.human_decision.action.toUpperCase()}</span>
+              <span className="muted" style={{ fontSize: 12 }}>by {imp.human_decision.by}</span>
+              {imp.proposed_fix?.original_addendum &&
+                <span className="muted" style={{ fontSize: 12 }}>(fix was edited by the human)</span>}
+            </div>
+          )}
 
           {imp.regression?.cases?.length > 0 && (
             <>
@@ -89,7 +174,8 @@ export default function Learning({ nonce, onChange }) {
           )}
 
           <div className="row" style={{ marginTop: 16 }}>
-            <button className="btn ghost sm" disabled={busy === imp.id || imp.status === "deployed"}
+            <button className="btn ghost sm"
+              disabled={busy === imp.id || !["reviewed", "tested"].includes(imp.status)}
               onClick={() => doRegression(imp.id)}>
               {busy === imp.id ? "Running…" : "Run regression test"}
             </button>
@@ -97,7 +183,9 @@ export default function Learning({ nonce, onChange }) {
               onClick={() => doApprove(imp.id)}>
               Approve &amp; deploy new version
             </button>
-            {imp.status === "proposed" && <span className="muted" style={{ fontSize: 12 }}>Run the regression test before approval is unlocked.</span>}
+            {imp.status === "proposed" && <span className="muted" style={{ fontSize: 12 }}>A human must review (above) before testing.</span>}
+            {imp.status === "reviewed" && <span className="muted" style={{ fontSize: 12 }}>Accepted — run the regression test to unlock deploy.</span>}
+            {imp.status === "rejected" && <span className="muted" style={{ fontSize: 12 }}>Rejected by the human reviewer — not deployed.</span>}
             {imp.status === "deployed" && <span className="muted" style={{ fontSize: 12 }}>Deployed. Re-play the call in Live Ops — the Voice AI now answers correctly.</span>}
           </div>
         </div>

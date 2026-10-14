@@ -35,9 +35,15 @@ embeddings + in-memory stores). Add keys later to make it progressively more "re
 
 ## 3. (Optional) Postgres + pgvector
 
-1. Create a Postgres database with the `vector` extension (Neon and Vercel Postgres both support it).
-2. Run the DDL in `api/app/db.py` (`SCHEMA`) against it.
-3. Set `DATABASE_URL` in Vercel env vars and redeploy.
+1. Create a Postgres database that supports the `vector` extension — **Neon** or **Vercel Postgres**
+   both do. (Neon: the project's connection string; prefer the **pooled** one for serverless.)
+2. Set `DATABASE_URL` in Vercel → Environment Variables and redeploy.
+3. That's it — the app **creates the schema and the `vector` extension automatically** on first
+   request, seeds the documents with embeddings, and from then on uses **pgvector** for retrieval and
+   persists claims, conversations, traces, violations, interventions, improvements and agent
+   versions. No manual SQL needed. The driver is pure-Python (`pg8000`), so there's no Python-3.14
+   wheel problem. If the DB is ever unreachable, the app automatically falls back to in-memory and
+   keeps working (check the function logs for `[pg] error:` lines).
 
 ## Notes
 

@@ -13,7 +13,7 @@ Canonical demo call (Liberty Mutual auto accident):
   -> Knowledge Retrieval, Next Best Action, Summarization also fire & are scored
 """
 from typing import Dict
-from . import agents, governance, learning, observability
+from . import agents, governance, learning, observability, pg
 from .stores import State
 
 
@@ -202,6 +202,9 @@ def run_call(state: State, policy_id: str = "LM-AUTO-88123", brain: str = "") ->
 
     # flush governance traces to Braintrust (no-op unless BRAINTRUST_API_KEY set)
     observability.log_batch(bt_events)
+    # persist the whole call to Postgres (no-op unless DATABASE_URL set)
+    if pg.ready():
+        pg.persist_call(state, conv_id)
 
     return {
         "conversation_id": conv_id,

@@ -23,6 +23,8 @@ export const api = {
   dashboard: () => j("/api/dashboard"),
   traces: (convId) => j(`/api/traces/${convId}`),
   learning: () => j("/api/learning"),
+  review: (id, action, addendum = "") =>
+    j(`/api/learning/${id}/review`, { method: "POST", body: JSON.stringify({ action, addendum }) }),
   runRegression: (id) => j(`/api/learning/${id}/regression`, { method: "POST" }),
   approve: (id) => j(`/api/learning/${id}/approve`, { method: "POST" }),
   reset: () => j("/api/reset", { method: "POST" }),

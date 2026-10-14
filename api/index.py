@@ -20,6 +20,7 @@ from app.stores import get_state, reset_state
 from app.agents import AGENTS, A
 from app.governance import GOV_ACTORS
 from app import orchestrator, learning, llm, db, observability
+from app import pg
 
 app = FastAPI(title="LTM Governed Contact Center")
 app.add_middleware(
@@ -86,7 +87,7 @@ def dependency_graph(state):
 def health():
     state = get_state()
     return {"ok": True, "llm": llm.llm_status(), "embeddings": state.embed_mode,
-            "db": db.db_status(),
+            "db": {**pg.status(), "ready": pg.ready()},
             "observability": observability.status(),
             "realtime": bool(os.environ.get("OPENAI_API_KEY")),
             "data": {"documents": len(state.knowledge.docs),
@@ -159,13 +160,20 @@ def dashboard_route():
     pass_rate = round(sum(c["score"] for c in cards) / len(cards)) if cards else 0
     convs = sorted(op.conversations.values(), key=lambda c: c["started_at"])
     latest_conv = convs[-1]["conversation_id"] if convs else None
+    # durable counts from Postgres when available, else in-memory
+    kcounts = {"active_conversations": len(op.conversations),
+               "violations": len(op.violations), "interventions": len(op.interventions)}
+    if pg.ready():
+        pgc = pg.counts()
+        if pgc:
+            kcounts.update(pgc)
     return {
         "kpis": {
             "agents_registered": len(AGENTS) + len(GOV_ACTORS),
-            "active_conversations": len(op.conversations),
+            "active_conversations": kcounts["active_conversations"],
             "eval_pass_rate": pass_rate,
-            "violations": len(op.violations),
-            "interventions": len(op.interventions),
+            "violations": kcounts["violations"],
+            "interventions": kcounts["interventions"],
             "learning_pending": len(pending),
         },
         "matrix": cards,
@@ -182,6 +190,13 @@ def learning_route():
     return {"improvements": list(state.learning.improvements.values()),
             "eval_cases": state.learning.eval_cases,
             "versions": state.learning.versions}
+
+
+@app.post("/api/learning/{imp_id}/review")
+def review_route(imp_id: str, body: dict = Body(default={})):
+    state = get_state()
+    return learning.human_review(state, imp_id, body.get("action", ""),
+                                 addendum=body.get("addendum", ""))
 
 
 @app.post("/api/learning/{imp_id}/regression")

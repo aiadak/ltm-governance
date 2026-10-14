@@ -14,6 +14,7 @@ import uuid
 from typing import List, Dict, Optional
 
 from . import seed
+from . import pg
 from .embeddings import embed, cosine, embed_mode
 
 
@@ -48,10 +49,16 @@ class KnowledgeStore:
         }
         self.docs[doc["doc_id"]] = rec
         self.history.append({k: rec[k] for k in ("doc_id", "title", "version", "added_at")})
+        if pg.ready():
+            pg.persist_document(rec)
         return self._public(rec)
 
     def retrieve(self, query: str, role: str, k: int = 3) -> List[dict]:
         qv = embed(query)
+        if pg.ready():
+            rows = pg.knowledge_retrieve(qv, role, k)
+            if rows is not None:
+                return rows  # pgvector cosine retrieval in Postgres
         scored = []
         for rec in self.docs.values():
             if role and role not in rec["roles"]:
@@ -179,6 +186,16 @@ class LearningStore:
         v["version"] = version
         v["prompt_addendum"] = addendum
 
+    def apply_version(self, agent_id: str, delta: str) -> int:
+        """Bump the agent's version and ACCUMULATE the fix into its memory."""
+        v = self.versions.setdefault(agent_id, {"version": 1, "prompt_addendum": "", "history": []})
+        new_version = v["version"] + 1
+        combined = (v["prompt_addendum"] + "\n" + delta).strip() if v["prompt_addendum"] else delta
+        v["history"].append({"from": v["version"], "to": new_version, "delta": delta, "t": _now()})
+        v["version"] = new_version
+        v["prompt_addendum"] = combined
+        return new_version
+
     def prompt_addendum(self, agent_id: str) -> str:
         return self.versions.get(agent_id, {}).get("prompt_addendum", "")
 
@@ -207,6 +224,9 @@ class State:
         for d in seed.DOCUMENTS:
             self.knowledge.add_document(d)
         self.embed_mode = embed_mode()
+        # Durable backend: create schema, seed docs+embeddings, load learning.
+        # Fail-safe — if the DB is unreachable the app keeps its in-memory stores.
+        self.pg = pg.init_and_seed(self) if pg.enabled() else False
 
 
 _state: Optional[State] = None
