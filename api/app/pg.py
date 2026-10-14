@@ -18,14 +18,29 @@ import sys
 import json
 from urllib.parse import urlparse, parse_qs
 
-# Accept whichever name the host provides. Vercel's Neon/Postgres integration
-# sets several of these; a manual setup uses DATABASE_URL. First non-empty wins.
-DATABASE_URL = next(
-    (os.environ[k] for k in (
-        "DATABASE_URL", "POSTGRES_URL", "POSTGRES_PRISMA_URL",
-        "POSTGRES_URL_NON_POOLING", "NEON_DATABASE_URL", "DATABASE_URL_UNPOOLED")
-     if os.environ.get(k)),
-    None)
+def _resolve_db_url():
+    """
+    Find the Postgres connection string regardless of what the host named it.
+    Vercel's Neon/Postgres integration sets prefixed names (e.g. DATABASE_URL,
+    POSTGRES_URL, STORAGE_URL, <PREFIX>_URL). We check the common names first,
+    then fall back to ANY env var whose value is a postgres:// URL — so whatever
+    prefix was chosen in the integration dialog, it just works.
+    """
+    for k in ("DATABASE_URL", "POSTGRES_URL", "POSTGRES_PRISMA_URL",
+              "POSTGRES_URL_NON_POOLING", "NEON_DATABASE_URL", "DATABASE_URL_UNPOOLED",
+              "STORAGE_URL", "STORAGE_POSTGRES_URL"):
+        if os.environ.get(k):
+            return os.environ[k]
+    # prefer a pooled URL if several are present
+    candidates = [v for v in os.environ.values()
+                  if isinstance(v, str) and v.startswith(("postgres://", "postgresql://"))]
+    for v in candidates:
+        if "pooler" in v or "-pooler" in v:
+            return v
+    return candidates[0] if candidates else None
+
+
+DATABASE_URL = _resolve_db_url()
 _READY = False  # set True once schema is created + seeded successfully
 
 
