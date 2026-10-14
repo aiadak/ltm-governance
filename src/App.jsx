@@ -30,7 +30,7 @@ export default function App() {
       <header className="topbar">
         <div className="logo">
           <span className="mark">L</span>
-          <div>LTMindtree
+          <div>LTM
             <small>Governed Contact Center</small>
           </div>
         </div>

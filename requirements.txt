@@ -1,3 +1,8 @@
+# Vercel's Python builder currently forces CPython 3.14 and ignores version pins,
+# so these are kept unpinned/floored to resolve against 3.14 wheels.
+# (The Postgres driver is intentionally omitted — it has no 3.14 wheel yet and is
+#  only needed once you enable DATABASE_URL. db.py imports it lazily. For the
+#  Postgres step we'll use a pure-Python driver, e.g. pg8000, instead.)
 fastapi>=0.115
 uvicorn>=0.30
 anthropic>=0.40

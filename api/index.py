@@ -6,6 +6,13 @@ Serverless entry for Vercel (exports `app`). Runs locally with:
 
 Real LLMs when ANTHROPIC_API_KEY / OPENAI_API_KEY are set; synthetic data only.
 """
+import os
+import sys
+
+# Ensure the sibling `app/` package is importable on Vercel's Python runtime,
+# which does not put this file's directory on sys.path the way local dev does.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 from fastapi import FastAPI, Body
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -200,9 +207,8 @@ def root():
 
 
 # Optional single-server mode: if a built SPA exists next to the repo, serve it.
-# (On Vercel the static build is served separately; this is for local/one-box runs.)
-import os as _os
-_DIST = _os.path.join(_os.path.dirname(__file__), "..", "dist")
-if _os.path.isdir(_DIST):
+# (On Vercel the static build is served separately, so skip this there.)
+_DIST = os.path.join(os.path.dirname(__file__), "..", "dist")
+if not os.environ.get("VERCEL") and os.path.isdir(_DIST):
     from fastapi.staticfiles import StaticFiles
     app.mount("/", StaticFiles(directory=_DIST, html=True), name="spa")
