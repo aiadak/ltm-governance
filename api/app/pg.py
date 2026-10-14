@@ -18,7 +18,14 @@ import sys
 import json
 from urllib.parse import urlparse, parse_qs
 
-DATABASE_URL = os.environ.get("DATABASE_URL")
+# Accept whichever name the host provides. Vercel's Neon/Postgres integration
+# sets several of these; a manual setup uses DATABASE_URL. First non-empty wins.
+DATABASE_URL = next(
+    (os.environ[k] for k in (
+        "DATABASE_URL", "POSTGRES_URL", "POSTGRES_PRISMA_URL",
+        "POSTGRES_URL_NON_POOLING", "NEON_DATABASE_URL", "DATABASE_URL_UNPOOLED")
+     if os.environ.get(k)),
+    None)
 _READY = False  # set True once schema is created + seeded successfully
 
 
