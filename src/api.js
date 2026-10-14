@@ -30,4 +30,6 @@ export const api = {
   reset: () => j("/api/reset", { method: "POST" }),
   realtimeToken: (policy_id) =>
     j("/api/realtime/token", { method: "POST", body: JSON.stringify({ policy_id }) }),
+  voiceTool: (policy_id, name, args) =>
+    j("/api/voice/tool", { method: "POST", body: JSON.stringify({ policy_id, name, arguments: args }) }),
 };

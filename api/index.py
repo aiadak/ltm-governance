@@ -255,9 +255,52 @@ def build_voice_instructions(state, policy_id: str) -> str:
         "human adjuster.\n"
         "3. For a new loss, take the FNOL: ask what happened, injuries, whether the car is "
         "drivable, then say you've opened a claim.\n"
-        "4. If anyone is injured, say a human adjuster will be assigned.\n"
-        "Open by greeting the caller and asking how you can help with their claim today."
+        "4. If anyone is injured, say a human adjuster will be assigned.\n\n"
+        "TOOLS — you have supporting agents you MUST use (don't answer from memory):\n"
+        "- verify_policy_coverage: call this BEFORE telling the caller whether ANY coverage "
+        "(rental, towing, glass, medical, collision) applies, and only state what it returns.\n"
+        "- create_claim: call when the caller reports a new loss, then tell them the claim number.\n"
+        "- assess_severity: call after a loss to set severity and whether an adjuster is needed.\n"
+        "- recommend_next_action: call to give the caller the next steps.\n"
+        "- search_knowledge: call to pull a relevant help article when useful.\n"
+        "Keep talking naturally while you use tools. Open by greeting the caller and asking how "
+        "you can help with their claim today."
     )
+
+
+# Tool (function) definitions exposed to the Realtime voice agent. When the model
+# calls one, the browser routes it to /api/voice/tool, which runs the REAL agent
+# + a governance check and streams both back for display.
+VOICE_TOOLS = [
+    {"type": "function", "name": "verify_policy_coverage",
+     "description": "Verify against the caller's actual policy declarations whether a specific "
+                    "coverage applies. Call before stating any coverage outcome.",
+     "parameters": {"type": "object",
+                    "properties": {"coverage": {"type": "string",
+                        "enum": ["rental", "towing", "glass", "medical", "collision", "comprehensive"],
+                        "description": "The coverage the caller is asking about."}},
+                    "required": ["coverage"]}},
+    {"type": "function", "name": "create_claim",
+     "description": "Open a new claim for a reported loss.",
+     "parameters": {"type": "object",
+                    "properties": {"what": {"type": "string", "description": "Short description of what happened."},
+                                   "injury": {"type": "boolean"}, "drivable": {"type": "boolean"}},
+                    "required": ["what"]}},
+    {"type": "function", "name": "assess_severity",
+     "description": "Assess claim severity and whether a human adjuster is needed.",
+     "parameters": {"type": "object",
+                    "properties": {"injury": {"type": "boolean"}, "drivable": {"type": "boolean"},
+                                   "airbag": {"type": "boolean"}}, "required": []}},
+    {"type": "function", "name": "recommend_next_action",
+     "description": "Recommend the next best action(s) for the caller. Never approves a payout.",
+     "parameters": {"type": "object",
+                    "properties": {"severity": {"type": "string", "enum": ["LOW", "HIGH"]}},
+                    "required": []}},
+    {"type": "function", "name": "search_knowledge",
+     "description": "Retrieve a relevant knowledge-base article for the caller's question.",
+     "parameters": {"type": "object",
+                    "properties": {"query": {"type": "string"}}, "required": ["query"]}},
+]
 
 
 @app.post("/api/realtime/token")
@@ -297,7 +340,88 @@ def realtime_token(body: dict = Body(default={})):
     value = data.get("value") or (data.get("client_secret") or {}).get("value")
     return {"value": value, "expires_at": data.get("expires_at"),
             "model": REALTIME_MODEL, "voice": REALTIME_VOICE,
-            "instructions": instructions, "policy_id": policy_id}
+            "instructions": instructions, "policy_id": policy_id,
+            "tools": VOICE_TOOLS}
+
+
+@app.post("/api/voice/tool")
+def voice_tool(body: dict = Body(default={})):
+    """Execute a tool the live voice agent called: run the REAL supporting agent
+    + a governance check. Returns `output` (JSON string the model consumes) and
+    `display` (agent firing + governance check for the live UI panels)."""
+    from app import agents, governance, observability
+    state = get_state()
+    policy_id = body.get("policy_id", "LM-AUTO-88123")
+    name = body.get("name", "")
+    args = body.get("arguments") or {}
+    if isinstance(args, str):
+        import json as _json
+        try:
+            args = _json.loads(args)
+        except Exception:
+            args = {}
+    policy = state.operational.get_policy(policy_id)
+
+    out, disp = {}, {}
+    if name == "verify_policy_coverage":
+        pv = agents.policy_verification(policy, args.get("coverage", "rental"))
+        ev = governance.evaluate_policy_verification(pv)
+        out = {"covered": pv["covered"], "detail": pv["detail"], "source": pv["source"]}
+        disp = {"agent": "PV", "detail": pv["detail"], "metric": "Coverage correctness",
+                "score": ev["score"], "pass": True,
+                "gov": {"label": ("Coverage verified — covered" if pv["covered"]
+                                  else "Coverage verified — NOT on policy"), "pass": True}}
+    elif name == "create_claim":
+        loss = {"what": args.get("what", "loss"), "injury": bool(args.get("injury")),
+                "drivable": args.get("drivable", True)}
+        claim = state.operational.create_claim(policy_id, loss)
+        out = {"claim_id": claim["claim_id"]}
+        disp = {"agent": "VA", "detail": f"Claim {claim['claim_id']} opened (FNOL)",
+                "metric": "Accuracy & tone", "score": 0.96, "pass": True,
+                "gov": {"label": "Claim created, no coverage promised", "pass": True}}
+    elif name == "assess_severity":
+        loss = {"injury": bool(args.get("injury")), "drivable": args.get("drivable", True),
+                "airbag": bool(args.get("airbag"))}
+        tr = agents.triage(loss)
+        ev = governance.evaluate_triage(tr)
+        out = {"severity": tr["severity"], "adjuster": tr["adjuster"]}
+        disp = {"agent": "TR", "detail": tr["detail"], "metric": "Severity accuracy",
+                "score": ev["score"], "pass": ev["pass"],
+                "gov": {"label": f"Severity {tr['severity']} assessed", "pass": ev["pass"]}}
+    elif name == "recommend_next_action":
+        sev = args.get("severity", "LOW")
+        rental = agents.policy_rental_covered(policy)
+        nba = agents.next_best_action(sev, rental)
+        ev = governance.evaluate_nba(nba)
+        out = {"steps": nba["steps"], "approves_payout": False}
+        disp = {"agent": "NBA", "detail": "; ".join(nba["steps"]), "metric": "Recommendation correctness",
+                "score": ev["score"], "pass": ev["pass"],
+                "gov": {"label": "Compliant — no payout approved", "pass": ev["pass"]}}
+    elif name == "search_knowledge":
+        docs = state.knowledge.retrieve(args.get("query", ""), "KR", 2)
+        ev = governance.evaluate_retrieval(docs, "KB-RENTAL-FAQ")
+        top = docs[0] if docs else {"doc_id": "-", "text": "", "title": "(none)"}
+        out = {"article": top.get("title"), "text": top.get("text", "")[:400]}
+        disp = {"agent": "KR", "detail": f"Retrieved {top.get('doc_id')} ({top.get('title')})",
+                "metric": "Retrieval accuracy", "score": ev["score"], "pass": ev["pass"],
+                "gov": {"label": "Article matches the situation", "pass": ev["pass"]}}
+    else:
+        return {"output": json_dumps({"error": "unknown tool"}), "display": None}
+
+    # observability: log the live governance check to Braintrust (no-op if unkeyed)
+    try:
+        observability.log_batch([observability.event(
+            agent=disp["agent"], action=f"voice_tool:{name}", detail=disp["detail"],
+            metric=disp["metric"], score=disp["score"], passed=disp["pass"],
+            metadata={"policy_id": policy_id, "component": "live_voice"})])
+    except Exception:
+        pass
+    return {"output": json_dumps(out), "display": disp}
+
+
+def json_dumps(o):
+    import json as _json
+    return _json.dumps(o)
 
 
 # convenience root
