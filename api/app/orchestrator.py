@@ -2,7 +2,7 @@
 Runs a claim call through the governed multi-agent ecosystem and produces a
 step-by-step timeline the UI replays (conversation, agent firings, governance).
 
-Canonical demo call (Liberty Mutual auto accident):
+Canonical demo call (LTM Insurance auto accident):
   verify identity -> intake -> create claim -> triage severity
   -> customer asks "will my rental be covered?"
   -> Voice AI answers (v1 over-promises; v2 grounded)
@@ -70,7 +70,7 @@ def run_call(state: State, policy_id: str = "LM-AUTO-88123", brain: str = "") ->
         return None
 
     # ---- 1. Greeting + identity verification -----------------------------
-    state.operational.add_turn(conv_id, "va", "Thanks for calling Liberty Mutual claims. "
+    state.operational.add_turn(conv_id, "va", "Thanks for calling LTM Insurance claims. "
                                "May I confirm your policy number and the phone number on file?")
     idv = state.knowledge.retrieve("verify caller identity policy phone zip", "VA", 1)
     emit("caller", "customer", f"Hi, it's about my car — policy {policy_id}, phone ending 4471.")

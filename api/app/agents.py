@@ -82,7 +82,7 @@ def voice_answer_rental(policy: dict, addendum: str, pv_result: dict, brain: str
         fb = ("I checked your policy, and it doesn't include rental reimbursement, "
               "so a rental would be out of pocket. I can share our preferred-vendor "
               "discount and next steps if that helps.")
-    sysmsg = ("You are a Liberty Mutual claims Voice AI. " + addendum +
+    sysmsg = ("You are a LTM Insurance claims Voice AI. " + addendum +
               " Answer the caller's rental question in 2 sentences, warm and clear. "
               "State ONLY what the verified policy supports.")
     user = f"Verified policy result: {pv_result}. Compose the spoken answer."

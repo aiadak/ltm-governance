@@ -20,7 +20,7 @@ from app.stores import get_state, reset_state
 from app.agents import AGENTS, A
 from app.governance import GOV_ACTORS
 from app import orchestrator, learning, llm, db, observability
-from app import pg
+from app import pg, scenarios
 
 app = FastAPI(title="LTM Governed Contact Center")
 app.add_middleware(
@@ -155,7 +155,8 @@ def dashboard_route():
     state = get_state()
     op = state.operational
     improvements = list(state.learning.improvements.values())
-    pending = [i for i in improvements if i["status"] in ("proposed", "tested")]
+    pending = [i for i in improvements if i["status"] in ("proposed", "tested", "reviewed")]
+    open_reviews = [r for r in state.learning.reviews.values() if r["status"] == "open"]
     cards = agent_scorecard(state)
     pass_rate = round(sum(c["score"] for c in cards) / len(cards)) if cards else 0
     convs = sorted(op.conversations.values(), key=lambda c: c["started_at"])
@@ -174,7 +175,7 @@ def dashboard_route():
             "eval_pass_rate": pass_rate,
             "violations": kcounts["violations"],
             "interventions": kcounts["interventions"],
-            "learning_pending": len(pending),
+            "learning_pending": len(pending) + len(open_reviews),
         },
         "matrix": cards,
         "violations": op.violations[-10:],
@@ -218,6 +219,88 @@ def reset_route():
 
 
 # ---------------------------------------------------------------------------
+# Scenario library + Satisfied/Not-satisfied training feedback
+# ---------------------------------------------------------------------------
+@app.get("/api/scenarios")
+def scenarios_route():
+    return {"scenarios": scenarios.list_scenarios(), "low_conf": scenarios.LOW_CONF}
+
+
+@app.post("/api/scenario/run")
+def scenario_run_route(body: dict = Body(default={})):
+    return scenarios.run_scenario(body.get("id", ""))
+
+
+# Quick-pick correction presets (the "give me options" on an unsatisfied answer).
+EDIT_PRESETS = [
+    {"id": "crisp", "label": "Make it crisper", "instruction": "Keep this answer to 1–2 short sentences — crisp and to the point, no over-explaining."},
+    {"id": "warm", "label": "Warmer / more empathetic", "instruction": "Open by acknowledging the customer's situation with empathy, then answer."},
+    {"id": "plain", "label": "Less jargon", "instruction": "Use plain, everyday language — no insurance jargon or internal terms."},
+    {"id": "clause", "label": "Cite the exact clause", "instruction": "Ground the answer in the specific policy clause and name it."},
+    {"id": "nextstep", "label": "Add a clear next step", "instruction": "End with one clear next step or call to action for the customer."},
+]
+
+
+@app.get("/api/feedback/presets")
+def feedback_presets():
+    return {"presets": EDIT_PRESETS}
+
+
+@app.post("/api/feedback")
+def feedback_route(body: dict = Body(default={})):
+    """Per-answer thumbs. 👍 -> no action. 👎 -> create a readable review item for
+    THAT one answer (a Voice AI reply or a supporting-agent output)."""
+    state = get_state()
+    if body.get("thumbs", "down") == "up":
+        return {"ok": True, "action": "none"}
+    item = state.learning.add_review({
+        "source": body.get("source", "agent"),          # 'voice' | 'agent'
+        "agent": body.get("agent", "VA"),                # agent code (voice -> VA)
+        "agent_name": body.get("agent_name", body.get("agent", "")),
+        "context": body.get("context", ""),             # what the customer asked
+        "answer": body.get("answer", ""),               # the answer being flagged
+        "confidence": body.get("confidence"),
+        "scenario_id": body.get("scenario_id"),
+    })
+    return {"ok": True, "item": item}
+
+
+@app.get("/api/learning/reviews")
+def reviews_route():
+    state = get_state()
+    revs = sorted(state.learning.reviews.values(), key=lambda r: r["created_at"], reverse=True)
+    return {"reviews": revs}
+
+
+@app.post("/api/learning/correct")
+def correct_route(body: dict = Body(default={})):
+    """Apply a human instruction to a flagged answer. The target agent (or the
+    Voice AI for a voice reply) LEARNS it — version bump + stored guidance that
+    shapes future replies (factual OR style, e.g. 'make it crisper')."""
+    state = get_state()
+    item = state.learning.reviews.get(body.get("item_id", ""))
+    if not item:
+        return {"error": "review item not found"}
+    if body.get("action") == "reject":
+        item["status"] = "dismissed"
+        return {"item": item}
+    instruction = (body.get("instruction") or "").strip()
+    if not instruction:
+        return {"error": "instruction required"}
+    target = "VA" if item.get("source") == "voice" else item.get("agent", "VA")
+    new_version = state.learning.apply_version(target, instruction)
+    item["status"] = "resolved"
+    item["instruction"] = instruction
+    item["target"] = target
+    item["new_version"] = new_version
+    pg.persist_version(target, state.learning.versions.get(target, {"version": new_version, "prompt_addendum": instruction, "history": []}))
+    observability.log_batch([observability.event(
+        agent=target, action="human_correction", detail=instruction,
+        score=0.95, passed=True, metadata={"component": "learning", "source": item.get("source")})])
+    return {"item": item, "target": target, "new_version": new_version}
+
+
+# ---------------------------------------------------------------------------
 # Live voice — OpenAI Realtime (WebRTC). The browser streams mic audio directly
 # to OpenAI with a short-lived ephemeral key minted here; the standard API key
 # never leaves the server. We also build the grounded agent instructions from
@@ -236,9 +319,10 @@ def build_voice_instructions(state, policy_id: str) -> str:
     coll = cov.get("collision", {})
     comp = cov.get("comprehensive", {})
     instr = (
-        "You are a Liberty Mutual auto-claims Voice AI agent on a phone call. This is a "
-        "SYNTHETIC demo with fictional data — no real customers. Be warm, concise and natural; "
-        "speak in short spoken sentences.\n\n"
+        "You are a LTM Insurance auto-claims Voice AI agent on a phone call. This is a "
+        "SYNTHETIC demo with fictional data — no real customers. Be warm and natural, but KEEP "
+        "EVERY REPLY TO 1–2 SHORT SPOKEN SENTENCES — crisp, no over-explaining. Only go longer if "
+        "the caller explicitly asks for more detail.\n\n"
         f"The caller is {policy.get('holder','the policyholder')}, policy {policy_id}, "
         f"vehicle {policy.get('vehicle','on file')}.\n"
         "VERIFIED POLICY COVERAGES (this is the single source of truth — never state a coverage "

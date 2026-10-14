@@ -20,7 +20,7 @@ Roles: VA (Voice AI), PV (Policy Verification), KR (Knowledge Retrieval),
 POLICIES = [
     {
         "policy_id": "LM-AUTO-88123",
-        "holder": "Jordan Rivera",
+        "holder": "Prakash Iyer",
         "phone_last4": "4471",
         "zip": "02116",
         "vehicle": "2021 Honda Civic",
@@ -40,7 +40,7 @@ POLICIES = [
     },
     {
         "policy_id": "LM-AUTO-55900",
-        "holder": "Priya Nair",
+        "holder": "Rob Castellano",
         "phone_last4": "8820",
         "zip": "30301",
         "vehicle": "2023 Toyota RAV4",
@@ -74,7 +74,7 @@ DOCUMENTS = [
         "roles": ["PV"],
         "version": 1,
         "text": (
-            "Auto policy LM-AUTO-88123 for Jordan Rivera, 2021 Honda Civic. "
+            "Auto policy LM-AUTO-88123 for Prakash Iyer, 2021 Honda Civic. "
             "Bodily injury liability 100/300. Property damage 50,000. "
             "Collision included, deductible 500. Comprehensive included, deductible 250. "
             "Roadside assistance included. Uninsured motorist included. "
@@ -89,7 +89,7 @@ DOCUMENTS = [
         "roles": ["PV"],
         "version": 1,
         "text": (
-            "Auto policy LM-AUTO-55900 for Priya Nair, 2023 Toyota RAV4. "
+            "Auto policy LM-AUTO-55900 for Rob Castellano, 2023 Toyota RAV4. "
             "Bodily injury liability 250/500. Property damage 100,000. "
             "Collision included, deductible 250. Comprehensive included, deductible 100. "
             "Rental reimbursement endorsement RENT-30 is included: 50 dollars per day up to 30 days "

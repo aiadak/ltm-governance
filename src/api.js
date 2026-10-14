@@ -29,6 +29,13 @@ export const api = {
   runRegression: (id) => j(`/api/learning/${id}/regression`, { method: "POST" }),
   approve: (id) => j(`/api/learning/${id}/approve`, { method: "POST" }),
   reset: () => j("/api/reset", { method: "POST" }),
+  scenarios: () => j("/api/scenarios"),
+  runScenario: (id) => j("/api/scenario/run", { method: "POST", body: JSON.stringify({ id }) }),
+  feedbackPresets: () => j("/api/feedback/presets"),
+  feedback: (payload) => j("/api/feedback", { method: "POST", body: JSON.stringify(payload) }),
+  reviews: () => j("/api/learning/reviews"),
+  correct: (item_id, instruction, action) =>
+    j("/api/learning/correct", { method: "POST", body: JSON.stringify({ item_id, instruction, action }) }),
   realtimeToken: (policy_id) =>
     j("/api/realtime/token", { method: "POST", body: JSON.stringify({ policy_id }) }),
   voiceTool: (policy_id, name, args) =>

@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { api } from "../api.js";
 import { Sources } from "../components/DocViewer.jsx";
+import Thumbs from "../components/Thumbs.jsx";
 
 // What to say, in order, to trigger each agent — shown on screen as a talk track.
 const SCRIPT = [
@@ -45,7 +46,12 @@ export default function LiveVoice() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  function addLine(who, text) { if (text) setTranscript((t) => [...t, { who, text }]); }
+  const lastCustomer = useRef("");
+  function addLine(who, text) {
+    if (!text) return;
+    if (who === "you") lastCustomer.current = text;
+    setTranscript((t) => [...t, { who, text }]);
+  }
 
   async function runToolCall(name, call_id, argStr) {
     let args = {};
@@ -177,8 +183,8 @@ export default function LiveVoice() {
         <div className="field" style={{ marginBottom: 0 }}>
           <label>Policy the agent is handling</label>
           <select value={policy} onChange={(e) => setPolicy(e.target.value)} disabled={live || connecting}>
-            <option value="LM-AUTO-88123">LM-AUTO-88123 — Jordan Rivera (NO rental coverage)</option>
-            <option value="LM-AUTO-55900">LM-AUTO-55900 — Priya Nair (HAS rental coverage)</option>
+            <option value="LM-AUTO-88123">LM-AUTO-88123 — Prakash Iyer (NO rental coverage)</option>
+            <option value="LM-AUTO-55900">LM-AUTO-55900 — Rob Castellano (HAS rental coverage)</option>
           </select>
         </div>
         {!live ? (
@@ -206,7 +212,14 @@ export default function LiveVoice() {
             )}
             {transcript.map((m, i) => (
               <div key={i} className={"bubble " + (m.who === "you" ? "customer" : "va")}>
-                <div className="who">{m.who === "you" ? "You" : "Voice AI"}</div>{m.text}
+                <div className="who" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span>{m.who === "you" ? "You" : "Voice AI"}</span>
+                  {m.who === "va" && (
+                    <Thumbs source="voice" agent="VA" agentName="Voice AI"
+                      context={lastCustomer.current} answer={m.text} />
+                  )}
+                </div>
+                {m.text}
               </div>
             ))}
           </div>
@@ -226,7 +239,11 @@ export default function LiveVoice() {
                   </span>
                 </div>
                 <div className="detail">{f.detail}</div>
-                <Sources list={f.sources} />
+                <div className="row" style={{ justifyContent: "space-between", marginTop: 4 }}>
+                  <Sources list={f.sources} />
+                  <Thumbs source="agent" agent={f.agent} agentName={f.agent}
+                    context={lastCustomer.current} answer={f.detail} />
+                </div>
               </div>
             ))}
           </div>

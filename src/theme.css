@@ -208,6 +208,27 @@ textarea { min-height: 70px; resize: vertical; }
 .docpanel-head h3 { font-size: 16px; }
 .docpanel-body { padding: 18px 20px; }
 
+/* ---- thumbs feedback ---- */
+.fb { display: inline-flex; gap: 4px; }
+.fb-btn { background: transparent; border: 1px solid var(--line-2); border-radius: 7px; cursor: pointer; font-size: 13px; padding: 1px 6px; line-height: 1.4; }
+.fb-btn:hover { background: var(--bg-3); }
+.fb-note { font-family: var(--mono); font-size: 10px; }
+.fb-note.ok { color: var(--green); }
+.fb-note.flag { color: var(--coral); }
+
+/* ---- readable learning review ---- */
+.rev { border: 1px solid var(--line-2); border-radius: 12px; padding: 16px 18px; margin-bottom: 14px; background: var(--bg-1); }
+.rev.open { border-color: var(--coral-dim); }
+.rev.resolved { border-color: #22402e; }
+.rev .said { background: var(--bg-2); border-left: 3px solid var(--line-2); padding: 10px 13px; border-radius: 8px; font-size: 14px; margin: 8px 0; }
+.rev.open .said { border-left-color: var(--coral); }
+.preset-chip { font-size: 12px; padding: 6px 11px; border-radius: 20px; border: 1px solid var(--line-2); color: var(--text); background: var(--bg-2); cursor: pointer; }
+.preset-chip:hover { border-color: var(--coral); }
+.preset-chip.sel { border-color: var(--coral); color: var(--coral); background: #2a1813; }
+.src-tag { font-family: var(--mono); font-size: 10px; padding: 2px 8px; border-radius: 20px; }
+.src-tag.voice { color: var(--coral); background: #2a1813; }
+.src-tag.agent { color: var(--blue); background: #132033; }
+
 /* ---- demo script ---- */
 .script-step { display: flex; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line); }
 .script-step:last-child { border-bottom: none; }

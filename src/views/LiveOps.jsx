@@ -1,5 +1,6 @@
 import React, { useState, useRef } from "react";
 import { api } from "../api.js";
+import Thumbs from "../components/Thumbs.jsx";
 
 export default function LiveOps({ onChange }) {
   const [policy, setPolicy] = useState("LM-AUTO-88123");
@@ -50,7 +51,7 @@ export default function LiveOps({ onChange }) {
     <div>
       <div className="view-head">
         <h1>Live Claims Conversation</h1>
-        <p>A Liberty Mutual auto-accident call runs through the governed ecosystem. Watch the
+        <p>A LTM Insurance auto-accident call runs through the governed ecosystem. Watch the
           Voice AI talk to the customer (left), supporting agents fire (middle), and governance
           check every agent in real time (right).</p>
       </div>
@@ -59,8 +60,8 @@ export default function LiveOps({ onChange }) {
         <div className="field" style={{ marginBottom: 0 }}>
           <label>Policy on the call</label>
           <select value={policy} onChange={(e) => setPolicy(e.target.value)} disabled={playing}>
-            <option value="LM-AUTO-88123">LM-AUTO-88123 — Jordan Rivera (NO rental coverage)</option>
-            <option value="LM-AUTO-55900">LM-AUTO-55900 — Priya Nair (HAS rental coverage)</option>
+            <option value="LM-AUTO-88123">LM-AUTO-88123 — Prakash Iyer (NO rental coverage)</option>
+            <option value="LM-AUTO-55900">LM-AUTO-55900 — Rob Castellano (HAS rental coverage)</option>
           </select>
         </div>
         <button className="btn" onClick={play} disabled={playing}>
@@ -83,7 +84,13 @@ export default function LiveOps({ onChange }) {
             {conv.length === 0 && <div className="empty">Press play to start the call.</div>}
             {conv.map((m, i) => (
               <div key={i} className={"bubble " + (m.cls || m.who)}>
-                <div className="who">{m.who === "va" ? "Voice AI" : "Customer"}</div>
+                <div className="who" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span>{m.who === "va" ? "Voice AI" : "Customer"}</span>
+                  {m.who === "va" && (
+                    <Thumbs source="voice" agent="VA" agentName="Voice AI"
+                      context="scripted governed call" answer={m.text} onFlag={onChange} />
+                  )}
+                </div>
                 {m.text}
               </div>
             ))}
@@ -105,6 +112,10 @@ export default function LiveOps({ onChange }) {
                   </span>
                 </div>
                 <div className="detail">{f.detail}</div>
+                <div className="row" style={{ justifyContent: "flex-end", marginTop: 4 }}>
+                  <Thumbs source="agent" agent={f.agent} agentName={f.agent}
+                    context="scripted governed call" answer={f.detail} onFlag={onChange} />
+                </div>
               </div>
             ))}
           </div>

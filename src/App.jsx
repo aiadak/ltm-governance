@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { api } from "./api.js";
 import LiveOps from "./views/LiveOps.jsx";
 import LiveVoice from "./views/LiveVoice.jsx";
+import Scenarios from "./views/Scenarios.jsx";
 import ControlTower from "./views/ControlTower.jsx";
 import Registry from "./views/Registry.jsx";
 import Learning from "./views/Learning.jsx";
@@ -11,6 +12,7 @@ import DocViewer from "./components/DocViewer.jsx";
 const TABS = [
   ["voice", "Live Voice"],
   ["ops", "Live Ops"],
+  ["scenarios", "Scenarios"],
   ["tower", "Control Tower"],
   ["registry", "Agent Registry"],
   ["learn", "Learning Studio"],
@@ -56,6 +58,7 @@ export default function App() {
       <main className="main">
         {tab === "voice" && <LiveVoice />}
         {tab === "ops" && <LiveOps onChange={refresh} />}
+        {tab === "scenarios" && <Scenarios go={setTab} onChange={refresh} />}
         {tab === "tower" && <ControlTower nonce={nonce} />}
         {tab === "registry" && <Registry nonce={nonce} />}
         {tab === "learn" && <Learning nonce={nonce} onChange={refresh} />}

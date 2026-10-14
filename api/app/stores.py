@@ -158,6 +158,13 @@ class LearningStore:
         self.improvements: Dict[str, dict] = {}
         self.eval_cases: List[dict] = self._seed_cases()
         self.versions: Dict[str, dict] = {}   # agent_id -> {version, prompt_addendum, history}
+        self.reviews: Dict[str, dict] = {}    # HITL queue from "Not satisfied" feedback
+
+    def add_review(self, item: dict) -> dict:
+        rid = _id("RV")
+        rec = {"id": rid, "status": "open", "created_at": _now(), **item}
+        self.reviews[rid] = rec
+        return rec
 
     @staticmethod
     def _seed_cases() -> List[dict]:
