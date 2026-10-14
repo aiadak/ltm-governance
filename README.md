@@ -1,7 +1,7 @@
 # LTM Governed Contact Center
 
 An **agent governance & continuous-learning platform for a whole contact center** — not just a voice
-chatbot. A Liberty Mutual–style auto-claim call runs through a governed multi-agent ecosystem: a
+chatbot. A LTM Insurance–style auto-claim call runs through a governed multi-agent ecosystem: a
 Voice AI handles the call, supporting agents fire (Policy Verification, Knowledge Retrieval, Next
 Best Action, Triage, Summarization), and a governance layer (Audit/Compliance + a Human Supervisor)
 monitors every agent in real time. When the Voice AI over-promises rental coverage, governance

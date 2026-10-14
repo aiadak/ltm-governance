@@ -7,7 +7,7 @@ Two ways to demo: the **scripted** Live Ops call (guaranteed), and the **live vo
 
 ## A. Live Voice — what to say (talk track)
 
-Open the **Live Voice** tab, choose **LM-AUTO-88123 — Jordan Rivera (NO rental coverage)**,
+Open the **Live Voice** tab, choose **LM-AUTO-88123 — Prakash Iyer (NO rental coverage)**,
 press **🎙 Start call**, allow the mic, then say these in order. Each line triggers a real agent
 (watch the middle "Supporting agents" and right "Governance" panels light up live).
 
