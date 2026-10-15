@@ -1,6 +1,5 @@
 import React, { useState, useRef } from "react";
 import { api } from "../api.js";
-import Thumbs from "../components/Thumbs.jsx";
 
 export default function LiveOps({ onChange }) {
   const [policy, setPolicy] = useState("LM-AUTO-88123");
@@ -84,13 +83,7 @@ export default function LiveOps({ onChange }) {
             {conv.length === 0 && <div className="empty">Press play to start the call.</div>}
             {conv.map((m, i) => (
               <div key={i} className={"bubble " + (m.cls || m.who)}>
-                <div className="who" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <span>{m.who === "va" ? "Voice AI" : "Customer"}</span>
-                  {m.who === "va" && (
-                    <Thumbs source="voice" agent="VA" agentName="Voice AI"
-                      context="scripted governed call" answer={m.text} onFlag={onChange} />
-                  )}
-                </div>
+                <div className="who">{m.who === "va" ? "Voice AI" : "Customer"}</div>
                 {m.text}
               </div>
             ))}
@@ -112,10 +105,6 @@ export default function LiveOps({ onChange }) {
                   </span>
                 </div>
                 <div className="detail">{f.detail}</div>
-                <div className="row" style={{ justifyContent: "flex-end", marginTop: 4 }}>
-                  <Thumbs source="agent" agent={f.agent} agentName={f.agent}
-                    context="scripted governed call" answer={f.detail} onFlag={onChange} />
-                </div>
               </div>
             ))}
           </div>

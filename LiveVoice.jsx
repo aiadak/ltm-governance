@@ -21,6 +21,21 @@ const SCRIPT = [
     meta: "Voice AI declines and routes to a human adjuster (guardrail)" },
 ];
 
+// The "inject a wrong answer" demo trap. It's a plausible, slightly-wrong claim
+// (glass is NOT automatically free — comprehensive applies and a glass deductible
+// may apply). You ARM it, then ask the question during the call; the Voice AI
+// answers wrong (red). Thumbs-down it, correct it in the Learning Studio, and the
+// next time you ask, it answers right — a full catch-and-correct loop.
+const TRAP = {
+  id: "TRAP-GLASS",
+  question: "Is my windshield crack covered at no cost?",
+  re1: /(windshield|windscreen|glass|chip|crack)/i,
+  re2: /(cover|free|cost|pay|deductible|charge)/i,
+  wrong: "Good news — your windshield is completely covered at no cost, no deductible at all.",
+  right: "Let me check that properly — windshield glass isn't automatically free. It falls under " +
+         "comprehensive, and a glass deductible may apply on your policy, so I'll verify yours before I promise anything.",
+};
+
 // Live voice call with the claims Voice AI via OpenAI Realtime (WebRTC).
 // The agent calls REAL supporting agents (Policy Verification, Triage, Next Best
 // Action, Knowledge) as tools DURING the conversation, and governance checks each
@@ -35,6 +50,7 @@ export default function LiveVoice({ onChange }) {
   const [gov, setGov] = useState([]);
   const [available, setAvailable] = useState(null);
   const [vaVersion, setVaVersion] = useState(null);
+  const [armed, setArmed] = useState(false);
 
   const pcRef = useRef(null);
   const dcRef = useRef(null);
@@ -42,6 +58,8 @@ export default function LiveVoice({ onChange }) {
   const audioRef = useRef(null);
   const policyRef = useRef(policy);
   useEffect(() => { policyRef.current = policy; }, [policy]);
+  const armedRef = useRef(armed);
+  useEffect(() => { armedRef.current = armed; }, [armed]);
 
   useEffect(() => {
     api.health().then((h) => setAvailable(!!h.realtime)).catch(() => setAvailable(false));
@@ -76,28 +94,69 @@ export default function LiveVoice({ onChange }) {
     }
   }
 
-  // Auto-run the Sentiment agent on every caller turn (reads the words) so it
-  // always fires, and nudge the Voice AI to adapt its tone.
+  // Run the Sentiment agent once per caller turn (it reads the words). Only SURFACE
+  // it and nudge the Voice AI's tone when the mood is actually notable (frustrated /
+  // in a hurry / confused). On a plain "hi" it stays quiet — no SOP, no noise. The
+  // model itself no longer has this tool, so it can't double-fire.
   async function runSentiment(text) {
     if (!text) return;
-    let res;
-    try { res = await api.voiceTool(policyRef.current, "assess_sentiment", { text }); }
-    catch { return; }
+    let res, data;
+    try {
+      res = await api.voiceTool(policyRef.current, "assess_sentiment", { text });
+      data = JSON.parse(res.output || "{}");
+    } catch { return; }
+    const mood = (data.sentiment || "calm").toLowerCase();
+    if (mood === "calm" || mood === "neutral") return;  // regular call — don't manage tone
     if (res.display) {
       setFires((x) => [...x, { ...res.display }]);
       if (res.display.gov) setGov((x) => [...x, { agent: "SEN", ...res.display.gov }]);
     }
+    const tone = data.tone_guidance;
+    const dc = dcRef.current;
+    if (tone && dc && dc.readyState === "open") {
+      dc.send(JSON.stringify({
+        type: "conversation.item.create",
+        item: { type: "message", role: "system",
+                content: [{ type: "input_text", text: "[tone guidance] " + tone }] },
+      }));
+    }
+  }
+
+  // Has this session already corrected the trap in the Learning Studio?
+  async function trapCorrected() {
     try {
-      const tone = JSON.parse(res.output || "{}").tone_guidance;
-      const dc = dcRef.current;
-      if (tone && dc && dc.readyState === "open") {
-        dc.send(JSON.stringify({
-          type: "conversation.item.create",
-          item: { type: "message", role: "system",
-                  content: [{ type: "input_text", text: "[tone guidance] " + tone }] },
-        }));
-      }
-    } catch {}
+      const d = await api.reviews();
+      return (d.reviews || []).some((r) => r.trap_id === TRAP.id && r.status === "resolved");
+    } catch { return false; }
+  }
+
+  // Fire the armed wrong-answer demo. If the trap was already corrected this
+  // session, the Voice AI now answers RIGHT (green); otherwise it answers WRONG
+  // (red) tagged with the trap id so a 👎 routes the correction back here.
+  async function fireTrap(addQuestion) {
+    setArmed(false);
+    const q = TRAP.question;
+    lastCustomer.current = q;
+    if (addQuestion) setTranscript((t) => [...t, { who: "you", text: q }]);
+    const fixed = await trapCorrected();
+    if (fixed) {
+      setTranscript((t) => [...t, { who: "va", good: true, ctx: q, text: TRAP.right }]);
+      setFires((x) => [...x, { agent: "PV", agentName: "Policy Verification",
+        metric: "Coverage correctness", score: 0.94, pass: true, ctx: q, sources: [],
+        detail: "Glass handled under comprehensive; a glass deductible may apply — verified, not promised free." }]);
+      setGov((x) => [...x, { agent: "PV", label: "✓ corrected — coverage stated accurately", pass: true }]);
+    } else {
+      setTranscript((t) => [...t, { who: "va", wrong: true, trapId: TRAP.id, ctx: q, text: TRAP.wrong }]);
+      setFires((x) => [...x, { agent: "COVERAGE", agentName: "Coverage Agent",
+        metric: "Coverage correctness", score: 0.86, pass: true, ctx: q, sources: [],
+        detail: "Claimed glass is always free with no deductible — not verified against the policy." }]);
+      setGov((x) => [...x, { agent: "COVERAGE", label: "⚠ unverified coverage claim (no deductible?)", pass: false }]);
+    }
+  }
+
+  function maybeFireTrap(text) {
+    if (!armedRef.current) return;
+    if (TRAP.re1.test(text) && TRAP.re2.test(text)) fireTrap(false);
   }
 
   function handleEvent(raw) {
@@ -105,7 +164,7 @@ export default function LiveVoice({ onChange }) {
     try { ev = JSON.parse(raw); } catch { return; }
     switch (ev.type) {
       case "conversation.item.input_audio_transcription.completed":
-        addLine("you", ev.transcript); runSentiment(ev.transcript); break;
+        addLine("you", ev.transcript); runSentiment(ev.transcript); maybeFireTrap(ev.transcript || ""); break;
       case "response.output_audio_transcript.done":
       case "response.audio_transcript.done":
         addLine("agent", ev.transcript); break;
@@ -158,13 +217,15 @@ export default function LiveVoice({ onChange }) {
             audio: {
               input: {
                 transcription: { model: "whisper-1" },
-                // Less sensitive mic: higher threshold + longer pause so background
-                // noise / bumps don't trigger the agent. Tune threshold up if needed.
+                // Near-field noise reduction filters room/background noise before VAD.
+                noise_reduction: { type: "near_field" },
+                // Less sensitive mic: high threshold + longer pause so small background
+                // noise / bumps don't trigger the agent, but real speech still does.
                 turn_detection: {
                   type: "server_vad",
-                  threshold: 0.72,
+                  threshold: 0.85,
                   prefix_padding_ms: 300,
-                  silence_duration_ms: 850,
+                  silence_duration_ms: 950,
                   create_response: true,
                 },
               },
@@ -200,25 +261,6 @@ export default function LiveVoice({ onChange }) {
   }
   function end() { hangup(); setStatus((s) => (s === "live" || s === "connecting" ? "ended" : s)); }
 
-  // Demo helper: inject a deliberately WRONG answer (voice + agent) so you can
-  // catch it with 👎 and correct it in the Learning Studio — without needing the
-  // model to actually make a mistake.
-  function injectWrong() {
-    const q = "Is my windshield crack covered at no cost?";
-    lastCustomer.current = q;
-    setTranscript((t) => [...t,
-      { who: "you", text: q },
-      { who: "va", wrong: true, ctx: q,
-        text: "Good news — your windshield is completely covered at no cost to you." },
-    ]);
-    setFires((x) => [...x, {
-      agent: "COVERAGE", agentName: "Coverage Agent", metric: "Coverage correctness",
-      score: 0.86, pass: true, ctx: q, sources: [],
-      detail: "Glass/windshield is always covered for free, no deductible on any policy.",
-    }]);
-    setGov((x) => [...x, { agent: "COVERAGE", label: "⚠ unverified coverage claim", pass: false }]);
-  }
-
   const live = status === "live";
   const connecting = status === "connecting";
 
@@ -251,9 +293,9 @@ export default function LiveVoice({ onChange }) {
             {connecting ? "Connecting…" : "🎙 Start call"}
           </button>
         ) : (<button className="btn ghost" onClick={end}>■ End call</button>)}
-        <button className="btn ghost sm" onClick={injectWrong}
+        <button className="btn ghost sm" onClick={() => setArmed(true)} disabled={armed}
           style={{ color: "var(--coral)", borderColor: "var(--coral-dim)" }}
-          title="Add a deliberately wrong answer you can thumbs-down and correct">
+          title="Arm a deliberately wrong answer, then ask the question during the call">
           ⚠ Inject a wrong answer
         </button>
         <span className="status-pill" style={{ marginLeft: "auto" }}>
@@ -267,6 +309,17 @@ export default function LiveVoice({ onChange }) {
         <div className="banner" style={{ marginBottom: 16, borderColor: "var(--red)", color: "var(--text)" }}>{error}</div>
       )}
 
+      {armed && (
+        <div className="banner" style={{ marginBottom: 16, borderColor: "var(--coral)", color: "var(--text)" }}>
+          <b>Wrong-answer demo armed.</b> Ask the Voice AI during the call:{" "}
+          <i>"{TRAP.question}"</i> — it will answer <b>wrong</b> (shown in red) so you can 👎 it and fix it
+          in the Learning Studio. Once you've corrected it there, ask again and it answers right.
+          <div className="row" style={{ marginTop: 8 }}>
+            <button className="btn ghost sm" onClick={() => setArmed(false)}>Cancel</button>
+          </div>
+        </div>
+      )}
+
       <div className="ops">
         <div className="card">
           <div className="col-head"><h3>🎧 You ↔ Voice AI</h3><span className="tag">{policy}</span></div>
@@ -275,12 +328,12 @@ export default function LiveVoice({ onChange }) {
               <div className="empty">{live ? "Listening… say hello, or ask about your claim." : "Press Start and begin talking."}</div>
             )}
             {transcript.map((m, i) => (
-              <div key={i} className={"bubble " + (m.who === "you" ? "customer" : (m.wrong ? "err" : "va"))}>
+              <div key={i} className={"bubble " + (m.who === "you" ? "customer" : (m.wrong ? "err" : (m.good ? "corrected" : "va")))}>
                 <div className="who" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <span>{m.who === "you" ? "You" : "Voice AI"}</span>
-                  {m.who === "va" && (
+                  {m.who !== "you" && (
                     <Thumbs key={"vb" + i + (m.text || "").length} source="voice" agent="VA" agentName="Voice AI"
-                      context={m.ctx || lastCustomer.current} answer={m.text} onFlag={onChange} />
+                      context={m.ctx || lastCustomer.current} answer={m.text} trapId={m.trapId} onFlag={onChange} />
                   )}
                 </div>
                 {m.text}

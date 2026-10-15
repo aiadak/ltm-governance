@@ -270,6 +270,8 @@ def feedback_route(body: dict = Body(default={})):
         "answer": body.get("answer", ""),               # the answer being flagged
         "confidence": body.get("confidence"),
         "scenario_id": body.get("scenario_id"),
+        "trap_id": body.get("trap_id", ""),             # demo "inject wrong answer" loop
+        "session_id": body.get("session_id", ""),       # scope to this browser session
     })
     return {"ok": True, "item": item}
 
@@ -288,9 +290,12 @@ def learning_clear():
 
 
 @app.get("/api/learning/reviews")
-def reviews_route():
+def reviews_route(session: str = ""):
     state = get_state()
     revs = sorted(state.learning.reviews.values(), key=lambda r: r["created_at"], reverse=True)
+    # only this browser session's flagged answers (blank at start, no past sessions)
+    if session:
+        revs = [r for r in revs if r.get("session_id") == session]
     return {"reviews": revs}
 
 
@@ -374,10 +379,13 @@ def build_voice_instructions(state, policy_id: str) -> str:
         "- create_claim: call when the caller reports a new loss, then tell them the claim number.\n"
         "- assess_severity: call after a loss to set severity and whether an adjuster is needed.\n"
         "- recommend_next_action: call to give the caller the next steps.\n"
-        "- search_knowledge: call to pull a relevant help article when useful.\n"
-        "- assess_sentiment: call this EARLY (and whenever their mood shifts). It returns a tone "
-        "SOP — FOLLOW IT. If the caller is frustrated, acknowledge and let them vent before fixing; "
-        "if they're in a hurry, be quick and skip pleasantries; if confused, simplify.\n"
+        "- search_knowledge: call to pull a relevant help article when useful.\n\n"
+        "TONE (only adapt when it's clearly needed — otherwise just be warm and normal):\n"
+        "- If the caller sounds frustrated or upset, acknowledge it and let them vent briefly "
+        "before you start fixing things.\n"
+        "- If they're in a hurry, be quick and skip pleasantries.\n"
+        "- If they're confused, slow down and simplify.\n"
+        "- If they're calm, don't over-manage the tone — just help.\n\n"
         "Keep talking naturally while you use tools. Open by greeting the caller and asking how "
         "you can help with their claim today."
     )
@@ -424,13 +432,9 @@ VOICE_TOOLS = [
      "description": "Retrieve a relevant knowledge-base article for the caller's question.",
      "parameters": {"type": "object",
                     "properties": {"query": {"type": "string"}}, "required": ["query"]}},
-    {"type": "function", "name": "assess_sentiment",
-     "description": "Detect the caller's mood and get the tone SOP for how to respond (e.g. "
-                    "frustrated -> let them vent and pacify; in a hurry -> be quick). Call this "
-                    "early in the call and again whenever their mood clearly shifts.",
-     "parameters": {"type": "object",
-                    "properties": {"text": {"type": "string", "description": "The caller's latest words."}},
-                    "required": ["text"]}},
+    # NOTE: assess_sentiment is intentionally NOT exposed to the model. The browser
+    # runs it client-side once per caller turn (and only surfaces it when the mood
+    # is notable), so the model calling it too would double-fire the Sentiment agent.
 ]
 
 
