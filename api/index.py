@@ -74,7 +74,7 @@ def dependency_graph(state):
     edges = [
         ["VA", "PV"], ["VA", "KR"], ["VA", "TR"],
         ["PV", "NBA"], ["KR", "NBA"], ["TR", "NBA"],
-        ["NBA", "VA"], ["VA", "SUM"],
+        ["NBA", "VA"], ["VA", "SUM"], ["VA", "SEN"],
     ]
     monitors = [["AU", x["id"]] for x in AGENTS] + [["HITL", "AU"]]
     return {"nodes": nodes, "edges": edges, "monitors": monitors}
@@ -283,6 +283,8 @@ def correct_route(body: dict = Body(default={})):
         return {"error": "review item not found"}
     if body.get("action") == "reject":
         item["status"] = "dismissed"
+        if pg.ready():
+            pg.persist_review(item)
         return {"item": item}
     instruction = (body.get("instruction") or "").strip()
     if not instruction:
@@ -293,6 +295,8 @@ def correct_route(body: dict = Body(default={})):
     item["instruction"] = instruction
     item["target"] = target
     item["new_version"] = new_version
+    if pg.ready():
+        pg.persist_review(item)
     pg.persist_version(target, state.learning.versions.get(target, {"version": new_version, "prompt_addendum": instruction, "history": []}))
     observability.log_batch([observability.event(
         agent=target, action="human_correction", detail=instruction,
@@ -347,6 +351,9 @@ def build_voice_instructions(state, policy_id: str) -> str:
         "- assess_severity: call after a loss to set severity and whether an adjuster is needed.\n"
         "- recommend_next_action: call to give the caller the next steps.\n"
         "- search_knowledge: call to pull a relevant help article when useful.\n"
+        "- assess_sentiment: call this EARLY (and whenever their mood shifts). It returns a tone "
+        "SOP — FOLLOW IT. If the caller is frustrated, acknowledge and let them vent before fixing; "
+        "if they're in a hurry, be quick and skip pleasantries; if confused, simplify.\n"
         "Keep talking naturally while you use tools. Open by greeting the caller and asking how "
         "you can help with their claim today."
     )
@@ -393,6 +400,13 @@ VOICE_TOOLS = [
      "description": "Retrieve a relevant knowledge-base article for the caller's question.",
      "parameters": {"type": "object",
                     "properties": {"query": {"type": "string"}}, "required": ["query"]}},
+    {"type": "function", "name": "assess_sentiment",
+     "description": "Detect the caller's mood and get the tone SOP for how to respond (e.g. "
+                    "frustrated -> let them vent and pacify; in a hurry -> be quick). Call this "
+                    "early in the call and again whenever their mood clearly shifts.",
+     "parameters": {"type": "object",
+                    "properties": {"text": {"type": "string", "description": "The caller's latest words."}},
+                    "required": ["text"]}},
 ]
 
 
@@ -529,6 +543,17 @@ def voice_tool(body: dict = Body(default={})):
                 "metric": "Retrieval accuracy", "score": ev["score"], "pass": ev["pass"],
                 "sources": _doc_sources(state, [d["doc_id"] for d in docs[:2]]),
                 "gov": {"label": "Article matches the situation", "pass": ev["pass"]}}
+    elif name == "assess_sentiment":
+        sent = agents.detect_sentiment(args.get("text", "") or body.get("context", ""))
+        sop = agents.SENTIMENT_SOP.get(sent, agents.SENTIMENT_SOP["calm"])
+        learned = state.learning.prompt_addendum("SEN")
+        if learned:
+            sop = sop + " " + learned
+        out = {"sentiment": sent, "tone_guidance": sop}
+        disp = {"agent": "SEN", "detail": f"Mood: {sent.upper()} — {sop}",
+                "metric": "Tone appropriateness", "score": 0.9, "pass": True,
+                "sources": _doc_sources(state, []),
+                "gov": {"label": f"Tone SOP applied ({sent})", "pass": True}}
     else:
         return {"output": json_dumps({"error": "unknown tool"}), "display": None}
 

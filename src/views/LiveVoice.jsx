@@ -5,6 +5,8 @@ import Thumbs from "../components/Thumbs.jsx";
 
 // What to say, in order, to trigger each agent — shown on screen as a talk track.
 const SCRIPT = [
+  { say: "Honestly I'm really frustrated — I've called three times and nobody has helped me!",
+    meta: "→ assess_sentiment (Sentiment) detects frustration → Voice AI pacifies, lets you vent" },
   { say: "Hi, I was just in a car accident — I was rear-ended at a stoplight.",
     meta: "Voice AI greets, starts intake" },
   { say: "The front bumper and hood are damaged, but no one's hurt and I can still drive it.",
@@ -23,8 +25,9 @@ const SCRIPT = [
 // The agent calls REAL supporting agents (Policy Verification, Triage, Next Best
 // Action, Knowledge) as tools DURING the conversation, and governance checks each
 // one live — so the supporting agents and governance are live while you talk.
-export default function LiveVoice() {
+export default function LiveVoice({ onChange }) {
   const [policy, setPolicy] = useState("LM-AUTO-88123");
+  const [showScript, setShowScript] = useState(false);
   const [status, setStatus] = useState("idle"); // idle|connecting|live|ended|error
   const [error, setError] = useState("");
   const [transcript, setTranscript] = useState([]);
@@ -216,7 +219,7 @@ export default function LiveVoice() {
                   <span>{m.who === "you" ? "You" : "Voice AI"}</span>
                   {m.who === "va" && (
                     <Thumbs source="voice" agent="VA" agentName="Voice AI"
-                      context={lastCustomer.current} answer={m.text} />
+                      context={lastCustomer.current} answer={m.text} onFlag={onChange} />
                   )}
                 </div>
                 {m.text}
@@ -242,7 +245,7 @@ export default function LiveVoice() {
                 <div className="row" style={{ justifyContent: "space-between", marginTop: 4 }}>
                   <Sources list={f.sources} />
                   <Thumbs source="agent" agent={f.agent} agentName={f.agent}
-                    context={lastCustomer.current} answer={f.detail} />
+                    context={lastCustomer.current} answer={f.detail} onFlag={onChange} />
                 </div>
               </div>
             ))}
@@ -264,25 +267,29 @@ export default function LiveVoice() {
       </div>
 
       <div className="card pad" style={{ marginTop: 14 }}>
-        <div className="row">
-          <h3 style={{ margin: 0 }}>🎬 Demo script — say these in order</h3>
+        <div className="row" style={{ cursor: "pointer" }} onClick={() => setShowScript(!showScript)}>
+          <h3 style={{ margin: 0 }}>{showScript ? "▾" : "▸"} 🎬 Demo script — say these in order</h3>
           <span className="muted" style={{ fontSize: 12 }}>on LM-AUTO-88123 (no rental), each line triggers an agent</span>
         </div>
-        <div style={{ marginTop: 10 }}>
-          {SCRIPT.map((s, i) => (
-            <div key={i} className="script-step">
-              <div className="script-n">{i + 1}</div>
-              <div>
-                <div className="script-say">"{s.say}"</div>
-                <div className="script-meta">{s.meta}</div>
-              </div>
+        {showScript && (
+          <>
+            <div style={{ marginTop: 10 }}>
+              {SCRIPT.map((s, i) => (
+                <div key={i} className="script-step">
+                  <div className="script-n">{i + 1}</div>
+                  <div>
+                    <div className="script-say">"{s.say}"</div>
+                    <div className="script-meta">{s.meta}</div>
+                  </div>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
-        <div className="muted" style={{ fontSize: 12, marginTop: 10 }}>
-          Each agent that fires shows a <span className="cite" style={{ cursor: "default" }}>DOC-ID</span>{" "}
-          citation — click it to open the exact source document section it used.
-        </div>
+            <div className="muted" style={{ fontSize: 12, marginTop: 10 }}>
+              Each agent that fires shows a <span className="cite" style={{ cursor: "default" }}>DOC-ID</span>{" "}
+              citation — click it to open the exact source document section it used.
+            </div>
+          </>
+        )}
       </div>
 
       <audio ref={audioRef} autoPlay />

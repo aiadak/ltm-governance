@@ -140,6 +140,9 @@ SCHEMA = [
          correction text, proposed_fix jsonb, guardrail text, status text,
          regression jsonb, human_decision jsonb, deployed_version int,
          created_at timestamptz DEFAULT now())""",
+    # per-answer feedback review queue (thumbs-down items), stored whole as jsonb
+    """CREATE TABLE IF NOT EXISTS reviews (
+         id text PRIMARY KEY, data jsonb, created_at timestamptz DEFAULT now())""",
 ]
 
 
@@ -170,6 +173,7 @@ def init_and_seed(state) -> bool:
             conn.commit()
         conn.close(); conn = None
         _load_learning(state)
+        _load_reviews(state)
         global _READY
         _READY = True
         _log(f"ready (documents={max(n, len(state.knowledge.docs))})")
@@ -203,6 +207,21 @@ def _load_learning(state):
                 "root_cause": rc, "correction": corr, "proposed_fix": jj(pf) or {},
                 "guardrail": gr, "status": st, "regression": jj(reg) or {"total": 0, "passed": 0, "cases": []},
                 "human_decision": jj(hd), "deployed_version": dv, "created_at": 0}
+
+
+def _load_reviews(state):
+    rows = _run("SELECT data FROM reviews ORDER BY created_at", fetch=True)
+    if rows:
+        for (data,) in rows:
+            d = data if isinstance(data, dict) else (json.loads(data) if data else None)
+            if d and d.get("id"):
+                state.learning.reviews[d["id"]] = d
+
+
+def persist_review(item):
+    _run("INSERT INTO reviews (id, data) VALUES (%s, %s) "
+         "ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data",
+         (item["id"], json.dumps(item)))
 
 
 def knowledge_retrieve(query_vec, role, k=3):

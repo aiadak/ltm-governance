@@ -56,7 +56,11 @@ export default function App() {
       </header>
 
       <main className="main">
-        {tab === "voice" && <LiveVoice />}
+        {/* LiveVoice stays mounted (just hidden) so an in-progress call, its
+            transcript and agent activity survive switching to another tab. */}
+        <div style={{ display: tab === "voice" ? "block" : "none" }}>
+          <LiveVoice onChange={refresh} />
+        </div>
         {tab === "ops" && <LiveOps onChange={refresh} />}
         {tab === "scenarios" && <Scenarios go={setTab} onChange={refresh} />}
         {tab === "tower" && <ControlTower nonce={nonce} />}

@@ -7,7 +7,8 @@ const POS = {
   KR:  { x: 300, y: 150 },
   TR:  { x: 300, y: 240 },
   NBA: { x: 510, y: 150 },
-  SUM: { x: 700, y: 150 },
+  SUM: { x: 700, y: 120 },
+  SEN: { x: 700, y: 215 },
   AU:  { x: 400, y: 345 },
   HITL:{ x: 210, y: 345 },
 };
@@ -15,12 +16,13 @@ const COLOR = { ok: "#4ea86f", watch: "#e0a94a", err: "#e0533d", guardian: "#5b8
 
 // which agents are downstream of each node (for impact highlight)
 const DOWNSTREAM = {
-  VA: ["PV", "KR", "TR", "NBA", "SUM"],
+  VA: ["PV", "KR", "TR", "NBA", "SUM", "SEN"],
   PV: ["NBA", "VA", "SUM"],
   KR: ["NBA", "VA", "SUM"],
   TR: ["NBA", "SUM"],
   NBA: ["VA", "SUM"],
   SUM: [],
+  SEN: [],
   AU: [], HITL: [],
 };
 

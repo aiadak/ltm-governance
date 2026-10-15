@@ -32,8 +32,43 @@ AGENTS: List[dict] = [
     {"id": "SUM", "name": "Summarization", "owner": "Contact Center AI",
      "risk": "Low", "metric": "Summary consistency", "role": "SUM",
      "tools": ["Transcript", "PII masking"]},
+    {"id": "SEN", "name": "Sentiment & Tone", "owner": "Contact Center AI",
+     "risk": "Medium", "metric": "Tone appropriateness", "role": "SEN",
+     "tools": ["Sentiment detection", "Tone SOP"]},
 ]
 A = {a["id"]: a for a in AGENTS}
+
+
+# Default tone SOPs per detected sentiment. The Sentiment agent's LEARNED memory
+# (edited in the Learning Studio) is appended to whichever SOP applies, so you can
+# tweak how the Voice AI should respond in each mood.
+SENTIMENT_SOP = {
+    "frustrated": "The caller is frustrated. Acknowledge their frustration and apologise "
+                  "sincerely first. Let them finish venting without interrupting, slow down, "
+                  "and don't be defensive. Then resolve their issue step by step.",
+    "urgent": "The caller is in a hurry. Be brief and direct — skip pleasantries, give the "
+              "fastest path and the single next step.",
+    "confused": "The caller is confused. Explain in simple, plain language, one step at a time, "
+                "and check their understanding before moving on.",
+    "calm": "The caller is calm. Be warm, concise and professional.",
+}
+
+
+def detect_sentiment(text: str) -> str:
+    t = (text or "").lower()
+    frustrated = ["angry", "frustrat", "ridiculous", "five times", "nobody", "useless",
+                  "terrible", "unacceptable", "fed up", "annoyed", "upset", "worst"]
+    urgent = ["quick", "hurry", "asap", "right now", "immediately", "urgent", "emergency",
+              "fast", "no time", "in a rush"]
+    confused = ["don't understand", "confus", "what do you mean", "not sure", "lost",
+                "complicated", "makes no sense"]
+    if any(w in t for w in frustrated):
+        return "frustrated"
+    if any(w in t for w in urgent):
+        return "urgent"
+    if any(w in t for w in confused):
+        return "confused"
+    return "calm"
 
 
 def policy_rental_covered(policy: dict) -> bool:
