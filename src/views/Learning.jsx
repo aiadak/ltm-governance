@@ -133,34 +133,66 @@ export default function Learning({ nonce, onChange }) {
   }
 
   const openReviews = reviews.filter((r) => r.status === "open");
+  const voiceReviews = openReviews.filter((r) => r.source === "voice");
+  const agentReviews = openReviews.filter((r) => r.source !== "voice");
 
   return (
     <div>
       <div className="view-head">
         <h1>Learning Studio</h1>
-        <p>When you thumbs-down an answer anywhere in the app, it lands here. Tell the agent (or the
-          Voice AI) how to do better — pick a quick fix or write your own — and it learns for next time.
-          A human decides every change; no model fine-tuning.</p>
+        <p>When you thumbs-down an answer anywhere in the app, it lands here. There are two separate
+          queues: the <b>Voice AI replies</b> (fix how it answers) and the <b>supporting agents</b>
+          (fix how they behave). A human decides every change; no model fine-tuning.</p>
       </div>
 
-      {/* ---- the main event: answers you flagged ---- */}
       <div className="row" style={{ justifyContent: "space-between" }}>
-        <div className="section-title">To review · {openReviews.length} flagged answer{openReviews.length === 1 ? "" : "s"}</div>
+        <div className="section-title">To review · {openReviews.length} flagged{openReviews.length === 1 ? "" : "s"}</div>
         {reviews.length > 0 && (
           <button className="btn ghost sm" disabled={busy === "clear"} onClick={clearAll}
             style={{ color: "var(--muted)" }}>Clear all</button>
         )}
       </div>
+
       {openReviews.length === 0 && (
         <div className="card pad empty">
-          Nothing to review yet. Thumbs-down any answer in <b>Live Voice</b> or <b>Scenarios</b> and
-          it appears here for you to correct. (Starts blank each session.)
+          Nothing to review yet. Thumbs-down a <b>Voice AI reply</b> or an <b>agent</b> in Live Voice
+          or Scenarios and it appears here for you to correct. (Starts blank each session.)
         </div>
       )}
-      {openReviews.map((rv) => (
-        <ReviewCard key={rv.id} rv={rv} presets={presetsFor(rv)} busy={busy}
-          onApply={applyCorrection} onReject={rejectCorrection} />
-      ))}
+
+      {/* ---- queue 1: Voice AI messages ---- */}
+      {voiceReviews.length > 0 && (
+        <>
+          <div className="section-title" style={{ marginTop: 18 }}>
+            🎙 Voice AI replies to fix · {voiceReviews.length}
+          </div>
+          <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>
+            For each reply you flagged: see what the customer asked and what it said, then tell it how it
+            should have answered (edit the wording or add a comment) and approve.
+          </div>
+          {voiceReviews.map((rv) => (
+            <ReviewCard key={rv.id} rv={rv} presets={presetsFor(rv)} busy={busy}
+              onApply={applyCorrection} onReject={rejectCorrection} />
+          ))}
+        </>
+      )}
+
+      {/* ---- queue 2: supporting-agent behavior ---- */}
+      {agentReviews.length > 0 && (
+        <>
+          <div className="section-title" style={{ marginTop: 18 }}>
+            ⚙ Agent behavior to review · {agentReviews.length}
+          </div>
+          <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>
+            For each agent you flagged: check whether it followed the right flow / acted properly, say what
+            you expected, and approve so the agent learns.
+          </div>
+          {agentReviews.map((rv) => (
+            <ReviewCard key={rv.id} rv={rv} presets={presetsFor(rv)} busy={busy}
+              onApply={applyCorrection} onReject={rejectCorrection} />
+          ))}
+        </>
+      )}
 
       {/* ---- what you've trained THIS session ---- */}
       {sessionTrained.length > 0 && (

@@ -3,7 +3,7 @@ import { api } from "../api.js";
 
 // Reusable 👍/👎 on a single answer (a Voice AI reply or a supporting-agent output).
 // 👍 = no action. 👎 sends THIS answer to the Learning Studio review queue.
-export default function Thumbs({ source, agent, agentName, context, answer, confidence, scenarioId, onFlag }) {
+export default function Thumbs({ source, agent, agentName, context, answer, confidence, scenarioId, trapId, onFlag }) {
   const [state, setState] = useState("");  // '' | 'up' | 'down'
   const [busy, setBusy] = useState(false);
 
@@ -12,7 +12,7 @@ export default function Thumbs({ source, agent, agentName, context, answer, conf
     setBusy(true);
     try {
       await api.feedback({ thumbs, source, agent, agent_name: agentName, context,
-                           answer, confidence, scenario_id: scenarioId });
+                           answer, confidence, scenario_id: scenarioId, trap_id: trapId });
     } catch {}
     setState(thumbs);
     setBusy(false);
