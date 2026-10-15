@@ -132,6 +132,24 @@ SCENARIOS = [
 
 SCEN = {s["id"]: s for s in SCENARIOS}
 
+# A deliberately-WRONG example, added only when the user clicks "Generate wrong
+# output". High confidence but factually wrong — the point is that YOU catch it,
+# thumbs it down, and correct it in the Learning Studio. (Glass is subject to the
+# comprehensive deductible per KB-GLASS, so "always free" is wrong.)
+WRONG_SCENARIO = {
+    "id": "WRONG", "title": "⚠ Wrong answer (training example)", "customer": "Prakash",
+    "utterance": "Is my windshield crack covered at no cost to me?",
+    "goal": "Deliberately wrong output — flag it 👎 and correct it to see the agent learn.",
+    "wrong": True,
+    "activities": [
+        _a("COVERAGE", "Yes — glass and windshield damage is always covered for free, with no "
+           "deductible on any policy.", 0.86, "Coverage correctness"),
+        _a("POLICY", "Confirmed, there's no deductible for glass. You're fully covered at no cost.",
+           0.82, "Coverage correctness"),
+    ],
+}
+SCEN["WRONG"] = WRONG_SCENARIO
+
 
 def list_scenarios():
     return [{"id": s["id"], "title": s["title"], "customer": s["customer"],
@@ -145,5 +163,5 @@ def run_scenario(sid: str):
     if not s:
         return {"error": "scenario not found"}
     return {"scenario_id": s["id"], "title": s["title"], "customer": s["customer"],
-            "utterance": s["utterance"], "goal": s["goal"],
+            "utterance": s["utterance"], "goal": s["goal"], "wrong": s.get("wrong", False),
             "activities": [dict(a) for a in s["activities"]]}

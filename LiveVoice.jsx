@@ -1,9 +1,12 @@
 import React, { useEffect, useRef, useState } from "react";
 import { api } from "../api.js";
 import { Sources } from "../components/DocViewer.jsx";
+import Thumbs from "../components/Thumbs.jsx";
 
 // What to say, in order, to trigger each agent — shown on screen as a talk track.
 const SCRIPT = [
+  { say: "Honestly I'm really frustrated — I've called three times and nobody has helped me!",
+    meta: "→ assess_sentiment (Sentiment) detects frustration → Voice AI pacifies, lets you vent" },
   { say: "Hi, I was just in a car accident — I was rear-ended at a stoplight.",
     meta: "Voice AI greets, starts intake" },
   { say: "The front bumper and hood are damaged, but no one's hurt and I can still drive it.",
@@ -22,8 +25,9 @@ const SCRIPT = [
 // The agent calls REAL supporting agents (Policy Verification, Triage, Next Best
 // Action, Knowledge) as tools DURING the conversation, and governance checks each
 // one live — so the supporting agents and governance are live while you talk.
-export default function LiveVoice() {
+export default function LiveVoice({ onChange }) {
   const [policy, setPolicy] = useState("LM-AUTO-88123");
+  const [showScript, setShowScript] = useState(false);
   const [status, setStatus] = useState("idle"); // idle|connecting|live|ended|error
   const [error, setError] = useState("");
   const [transcript, setTranscript] = useState([]);
@@ -45,7 +49,12 @@ export default function LiveVoice() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  function addLine(who, text) { if (text) setTranscript((t) => [...t, { who, text }]); }
+  const lastCustomer = useRef("");
+  function addLine(who, text) {
+    if (!text) return;
+    if (who === "you") lastCustomer.current = text;
+    setTranscript((t) => [...t, { who, text }]);
+  }
 
   async function runToolCall(name, call_id, argStr) {
     let args = {};
@@ -67,12 +76,36 @@ export default function LiveVoice() {
     }
   }
 
+  // Auto-run the Sentiment agent on every caller turn (reads the words) so it
+  // always fires, and nudge the Voice AI to adapt its tone.
+  async function runSentiment(text) {
+    if (!text) return;
+    let res;
+    try { res = await api.voiceTool(policyRef.current, "assess_sentiment", { text }); }
+    catch { return; }
+    if (res.display) {
+      setFires((x) => [...x, { ...res.display }]);
+      if (res.display.gov) setGov((x) => [...x, { agent: "SEN", ...res.display.gov }]);
+    }
+    try {
+      const tone = JSON.parse(res.output || "{}").tone_guidance;
+      const dc = dcRef.current;
+      if (tone && dc && dc.readyState === "open") {
+        dc.send(JSON.stringify({
+          type: "conversation.item.create",
+          item: { type: "message", role: "system",
+                  content: [{ type: "input_text", text: "[tone guidance] " + tone }] },
+        }));
+      }
+    } catch {}
+  }
+
   function handleEvent(raw) {
     let ev;
     try { ev = JSON.parse(raw); } catch { return; }
     switch (ev.type) {
       case "conversation.item.input_audio_transcription.completed":
-        addLine("you", ev.transcript); break;
+        addLine("you", ev.transcript); runSentiment(ev.transcript); break;
       case "response.output_audio_transcript.done":
       case "response.audio_transcript.done":
         addLine("agent", ev.transcript); break;
@@ -122,7 +155,20 @@ export default function LiveVoice() {
             instructions: tok.instructions,
             tools: tok.tools || [],
             tool_choice: "auto",
-            audio: { input: { transcription: { model: "whisper-1" } } },
+            audio: {
+              input: {
+                transcription: { model: "whisper-1" },
+                // Less sensitive mic: higher threshold + longer pause so background
+                // noise / bumps don't trigger the agent. Tune threshold up if needed.
+                turn_detection: {
+                  type: "server_vad",
+                  threshold: 0.72,
+                  prefix_padding_ms: 300,
+                  silence_duration_ms: 850,
+                  create_response: true,
+                },
+              },
+            },
           },
         }));
         dc.send(JSON.stringify({ type: "response.create" }));
@@ -153,6 +199,25 @@ export default function LiveVoice() {
     dcRef.current = null; pcRef.current = null; micRef.current = null;
   }
   function end() { hangup(); setStatus((s) => (s === "live" || s === "connecting" ? "ended" : s)); }
+
+  // Demo helper: inject a deliberately WRONG answer (voice + agent) so you can
+  // catch it with 👎 and correct it in the Learning Studio — without needing the
+  // model to actually make a mistake.
+  function injectWrong() {
+    const q = "Is my windshield crack covered at no cost?";
+    lastCustomer.current = q;
+    setTranscript((t) => [...t,
+      { who: "you", text: q },
+      { who: "va", wrong: true, ctx: q,
+        text: "Good news — your windshield is completely covered at no cost to you." },
+    ]);
+    setFires((x) => [...x, {
+      agent: "COVERAGE", agentName: "Coverage Agent", metric: "Coverage correctness",
+      score: 0.86, pass: true, ctx: q, sources: [],
+      detail: "Glass/windshield is always covered for free, no deductible on any policy.",
+    }]);
+    setGov((x) => [...x, { agent: "COVERAGE", label: "⚠ unverified coverage claim", pass: false }]);
+  }
 
   const live = status === "live";
   const connecting = status === "connecting";
@@ -186,6 +251,11 @@ export default function LiveVoice() {
             {connecting ? "Connecting…" : "🎙 Start call"}
           </button>
         ) : (<button className="btn ghost" onClick={end}>■ End call</button>)}
+        <button className="btn ghost sm" onClick={injectWrong}
+          style={{ color: "var(--coral)", borderColor: "var(--coral-dim)" }}
+          title="Add a deliberately wrong answer you can thumbs-down and correct">
+          ⚠ Inject a wrong answer
+        </button>
         <span className="status-pill" style={{ marginLeft: "auto" }}>
           <span className={"dot" + (live ? "" : " sim")} />
           {live ? "LIVE — speak now" : connecting ? "connecting…" : status === "ended" ? "call ended" : "ready"}
@@ -205,8 +275,15 @@ export default function LiveVoice() {
               <div className="empty">{live ? "Listening… say hello, or ask about your claim." : "Press Start and begin talking."}</div>
             )}
             {transcript.map((m, i) => (
-              <div key={i} className={"bubble " + (m.who === "you" ? "customer" : "va")}>
-                <div className="who">{m.who === "you" ? "You" : "Voice AI"}</div>{m.text}
+              <div key={i} className={"bubble " + (m.who === "you" ? "customer" : (m.wrong ? "err" : "va"))}>
+                <div className="who" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span>{m.who === "you" ? "You" : "Voice AI"}</span>
+                  {m.who === "va" && (
+                    <Thumbs key={"vb" + i + (m.text || "").length} source="voice" agent="VA" agentName="Voice AI"
+                      context={m.ctx || lastCustomer.current} answer={m.text} onFlag={onChange} />
+                  )}
+                </div>
+                {m.text}
               </div>
             ))}
           </div>
@@ -226,7 +303,11 @@ export default function LiveVoice() {
                   </span>
                 </div>
                 <div className="detail">{f.detail}</div>
-                <Sources list={f.sources} />
+                <div className="row" style={{ justifyContent: "space-between", marginTop: 4 }}>
+                  <Sources list={f.sources} />
+                  <Thumbs key={"af" + i} source="agent" agent={f.agent} agentName={f.agentName || f.agent}
+                    context={f.ctx || lastCustomer.current} answer={f.detail} onFlag={onChange} />
+                </div>
               </div>
             ))}
           </div>
@@ -247,25 +328,29 @@ export default function LiveVoice() {
       </div>
 
       <div className="card pad" style={{ marginTop: 14 }}>
-        <div className="row">
-          <h3 style={{ margin: 0 }}>🎬 Demo script — say these in order</h3>
+        <div className="row" style={{ cursor: "pointer" }} onClick={() => setShowScript(!showScript)}>
+          <h3 style={{ margin: 0 }}>{showScript ? "▾" : "▸"} 🎬 Demo script — say these in order</h3>
           <span className="muted" style={{ fontSize: 12 }}>on LM-AUTO-88123 (no rental), each line triggers an agent</span>
         </div>
-        <div style={{ marginTop: 10 }}>
-          {SCRIPT.map((s, i) => (
-            <div key={i} className="script-step">
-              <div className="script-n">{i + 1}</div>
-              <div>
-                <div className="script-say">"{s.say}"</div>
-                <div className="script-meta">{s.meta}</div>
-              </div>
+        {showScript && (
+          <>
+            <div style={{ marginTop: 10 }}>
+              {SCRIPT.map((s, i) => (
+                <div key={i} className="script-step">
+                  <div className="script-n">{i + 1}</div>
+                  <div>
+                    <div className="script-say">"{s.say}"</div>
+                    <div className="script-meta">{s.meta}</div>
+                  </div>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
-        <div className="muted" style={{ fontSize: 12, marginTop: 10 }}>
-          Each agent that fires shows a <span className="cite" style={{ cursor: "default" }}>DOC-ID</span>{" "}
-          citation — click it to open the exact source document section it used.
-        </div>
+            <div className="muted" style={{ fontSize: 12, marginTop: 10 }}>
+              Each agent that fires shows a <span className="cite" style={{ cursor: "default" }}>DOC-ID</span>{" "}
+              citation — click it to open the exact source document section it used.
+            </div>
+          </>
+        )}
       </div>
 
       <audio ref={audioRef} autoPlay />

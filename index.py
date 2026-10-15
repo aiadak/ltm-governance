@@ -74,7 +74,7 @@ def dependency_graph(state):
     edges = [
         ["VA", "PV"], ["VA", "KR"], ["VA", "TR"],
         ["PV", "NBA"], ["KR", "NBA"], ["TR", "NBA"],
-        ["NBA", "VA"], ["VA", "SUM"],
+        ["NBA", "VA"], ["VA", "SUM"], ["VA", "SEN"],
     ]
     monitors = [["AU", x["id"]] for x in AGENTS] + [["HITL", "AU"]]
     return {"nodes": nodes, "edges": edges, "monitors": monitors}
@@ -231,61 +231,99 @@ def scenario_run_route(body: dict = Body(default={})):
     return scenarios.run_scenario(body.get("id", ""))
 
 
+# Quick-pick correction presets. Two loops:
+#  - VOICE: how the Voice AI should SAY it (tone / length / style)
+#  - AGENT: how a supporting agent should BEHAVE / what's expected of it
+VOICE_PRESETS = [
+    {"id": "crisp", "label": "Make it crisper", "instruction": "Keep this answer to 1–2 short sentences — crisp and to the point, no over-explaining."},
+    {"id": "warm", "label": "Warmer / more empathetic", "instruction": "Open by acknowledging the customer's situation with empathy, then answer."},
+    {"id": "plain", "label": "Less jargon", "instruction": "Use plain, everyday language — no insurance jargon or internal terms."},
+    {"id": "clause", "label": "Cite the exact clause", "instruction": "Ground the answer in the specific policy clause and name it."},
+    {"id": "nextstep", "label": "Add a clear next step", "instruction": "End with one clear next step or call to action for the customer."},
+]
+AGENT_PRESETS = [
+    {"id": "cite", "label": "Should cite the policy clause", "instruction": "This agent must ground its answer in — and name — the specific policy clause or document."},
+    {"id": "escalate", "label": "Should escalate to a human", "instruction": "In this situation the agent should route to a licensed human adjuster rather than resolve it automatically."},
+    {"id": "source", "label": "Used the wrong source", "instruction": "The agent pulled the wrong document/article — it must use the correct source for this type of question."},
+    {"id": "compliant", "label": "Was not compliant", "instruction": "The agent must follow the compliance guardrail here (never approve a payout, cite exclusions, no admitting fault)."},
+    {"id": "behave", "label": "Wrong behaviour", "instruction": "Describe what this agent is expected to do in this case."},
+]
+
+
+@app.get("/api/feedback/presets")
+def feedback_presets():
+    return {"voice": VOICE_PRESETS, "agent": AGENT_PRESETS}
+
+
 @app.post("/api/feedback")
 def feedback_route(body: dict = Body(default={})):
-    """Satisfied -> no action. Not satisfied -> create a HITL review item with the
-    scenario's agent activities sorted by confidence (lowest first)."""
+    """Per-answer thumbs. 👍 -> no action. 👎 -> create a readable review item for
+    THAT one answer (a Voice AI reply or a supporting-agent output)."""
     state = get_state()
-    sid = body.get("scenario_id", "")
-    satisfied = bool(body.get("satisfied"))
-    s = scenarios.SCEN.get(sid)
-    if not s:
-        return {"error": "scenario not found"}
-    if satisfied:
-        return {"satisfied": True, "action": "none"}
-    acts = sorted((dict(a) for a in s["activities"]), key=lambda a: a["confidence"])
-    for a in acts:
-        a["flagged"] = a["confidence"] < scenarios.LOW_CONF
-        a["corrected"] = False
+    if body.get("thumbs", "down") == "up":
+        return {"ok": True, "action": "none"}
     item = state.learning.add_review({
-        "scenario_id": sid, "title": s["title"], "customer": s["customer"],
-        "utterance": s["utterance"], "activities": acts})
-    return {"satisfied": False, "review": item}
+        "source": body.get("source", "agent"),          # 'voice' | 'agent'
+        "agent": body.get("agent", "VA"),                # agent code (voice -> VA)
+        "agent_name": body.get("agent_name", body.get("agent", "")),
+        "context": body.get("context", ""),             # what the customer asked
+        "answer": body.get("answer", ""),               # the answer being flagged
+        "confidence": body.get("confidence"),
+        "scenario_id": body.get("scenario_id"),
+    })
+    return {"ok": True, "item": item}
+
+
+@app.post("/api/learning/clear")
+def learning_clear():
+    """Empty the learning data (review queue, improvements, learned versions) so the
+    Learning Studio is clean until the next thumbs-down. Explicit, user-triggered."""
+    state = get_state()
+    state.learning.reviews.clear()
+    state.learning.improvements.clear()
+    state.learning.versions.clear()
+    if pg.ready():
+        pg.clear_learning()
+    return {"ok": True}
 
 
 @app.get("/api/learning/reviews")
 def reviews_route():
     state = get_state()
     revs = sorted(state.learning.reviews.values(), key=lambda r: r["created_at"], reverse=True)
-    return {"reviews": revs, "low_conf": scenarios.LOW_CONF}
+    return {"reviews": revs}
 
 
 @app.post("/api/learning/correct")
 def correct_route(body: dict = Body(default={})):
-    """Human correction for one low-confidence agent answer -> that agent learns
-    (version bump + stored guardrail memory). Works for ANY agent."""
+    """Apply a human instruction to a flagged answer. The target agent (or the
+    Voice AI for a voice reply) LEARNS it — version bump + stored guidance that
+    shapes future replies (factual OR style, e.g. 'make it crisper')."""
     state = get_state()
     item = state.learning.reviews.get(body.get("item_id", ""))
     if not item:
         return {"error": "review item not found"}
-    agent = body.get("agent", "")
-    correction = (body.get("correction") or "").strip()
-    if not correction:
-        return {"error": "correction text required"}
-    new_version = state.learning.apply_version(agent, correction)
-    for a in item["activities"]:
-        if a["agent"] == agent:
-            a["corrected"] = True
-            a["correction"] = correction
-            a["new_version"] = new_version
-            a["confidence"] = max(a["confidence"], 0.92)  # retrained -> higher confidence
-    if all((not a["flagged"]) or a.get("corrected") for a in item["activities"]):
-        item["status"] = "resolved"
-    pg.persist_version(agent, state.learning.versions[agent])
+    if body.get("action") == "reject":
+        item["status"] = "dismissed"
+        if pg.ready():
+            pg.persist_review(item)
+        return {"item": item}
+    instruction = (body.get("instruction") or "").strip()
+    if not instruction:
+        return {"error": "instruction required"}
+    target = "VA" if item.get("source") == "voice" else item.get("agent", "VA")
+    new_version = state.learning.apply_version(target, instruction)
+    item["status"] = "resolved"
+    item["instruction"] = instruction
+    item["target"] = target
+    item["new_version"] = new_version
+    if pg.ready():
+        pg.persist_review(item)
+    pg.persist_version(target, state.learning.versions.get(target, {"version": new_version, "prompt_addendum": instruction, "history": []}))
     observability.log_batch([observability.event(
-        agent=agent, action="human_correction", detail=correction,
-        score=0.95, passed=True, metadata={"component": "learning", "scenario": item["scenario_id"]})])
-    return {"review": item, "agent": agent, "new_version": new_version}
+        agent=target, action="human_correction", detail=instruction,
+        score=0.95, passed=True, metadata={"component": "learning", "source": item.get("source")})])
+    return {"item": item, "target": target, "new_version": new_version}
 
 
 # ---------------------------------------------------------------------------
@@ -308,8 +346,9 @@ def build_voice_instructions(state, policy_id: str) -> str:
     comp = cov.get("comprehensive", {})
     instr = (
         "You are a LTM Insurance auto-claims Voice AI agent on a phone call. This is a "
-        "SYNTHETIC demo with fictional data — no real customers. Be warm, concise and natural; "
-        "speak in short spoken sentences.\n\n"
+        "SYNTHETIC demo with fictional data — no real customers. Be warm and natural, but KEEP "
+        "EVERY REPLY TO 1–2 SHORT SPOKEN SENTENCES — crisp, no over-explaining. Only go longer if "
+        "the caller explicitly asks for more detail.\n\n"
         f"The caller is {policy.get('holder','the policyholder')}, policy {policy_id}, "
         f"vehicle {policy.get('vehicle','on file')}.\n"
         "VERIFIED POLICY COVERAGES (this is the single source of truth — never state a coverage "
@@ -326,7 +365,9 @@ def build_voice_instructions(state, policy_id: str) -> str:
         "human adjuster.\n"
         "3. For a new loss, take the FNOL: ask what happened, injuries, whether the car is "
         "drivable, then say you've opened a claim.\n"
-        "4. If anyone is injured, say a human adjuster will be assigned.\n\n"
+        "4. If anyone is injured, say a human adjuster will be assigned.\n"
+        "5. Never end the call abruptly. After you handle something, ask if there's anything else "
+        "you can help with before wrapping up, and close warmly.\n\n"
         "TOOLS — you have supporting agents you MUST use (don't answer from memory):\n"
         "- verify_policy_coverage: call this BEFORE telling the caller whether ANY coverage "
         "(rental, towing, glass, medical, collision) applies, and only state what it returns.\n"
@@ -334,6 +375,9 @@ def build_voice_instructions(state, policy_id: str) -> str:
         "- assess_severity: call after a loss to set severity and whether an adjuster is needed.\n"
         "- recommend_next_action: call to give the caller the next steps.\n"
         "- search_knowledge: call to pull a relevant help article when useful.\n"
+        "- assess_sentiment: call this EARLY (and whenever their mood shifts). It returns a tone "
+        "SOP — FOLLOW IT. If the caller is frustrated, acknowledge and let them vent before fixing; "
+        "if they're in a hurry, be quick and skip pleasantries; if confused, simplify.\n"
         "Keep talking naturally while you use tools. Open by greeting the caller and asking how "
         "you can help with their claim today."
     )
@@ -380,6 +424,13 @@ VOICE_TOOLS = [
      "description": "Retrieve a relevant knowledge-base article for the caller's question.",
      "parameters": {"type": "object",
                     "properties": {"query": {"type": "string"}}, "required": ["query"]}},
+    {"type": "function", "name": "assess_sentiment",
+     "description": "Detect the caller's mood and get the tone SOP for how to respond (e.g. "
+                    "frustrated -> let them vent and pacify; in a hurry -> be quick). Call this "
+                    "early in the call and again whenever their mood clearly shifts.",
+     "parameters": {"type": "object",
+                    "properties": {"text": {"type": "string", "description": "The caller's latest words."}},
+                    "required": ["text"]}},
 ]
 
 
@@ -516,6 +567,17 @@ def voice_tool(body: dict = Body(default={})):
                 "metric": "Retrieval accuracy", "score": ev["score"], "pass": ev["pass"],
                 "sources": _doc_sources(state, [d["doc_id"] for d in docs[:2]]),
                 "gov": {"label": "Article matches the situation", "pass": ev["pass"]}}
+    elif name == "assess_sentiment":
+        sent = agents.detect_sentiment(args.get("text", "") or body.get("context", ""))
+        sop = agents.SENTIMENT_SOP.get(sent, agents.SENTIMENT_SOP["calm"])
+        learned = state.learning.prompt_addendum("SEN")
+        if learned:
+            sop = sop + " " + learned
+        out = {"sentiment": sent, "tone_guidance": sop}
+        disp = {"agent": "SEN", "detail": f"Mood: {sent.upper()} — {sop}",
+                "metric": "Tone appropriateness", "score": 0.9, "pass": True,
+                "sources": _doc_sources(state, []),
+                "gov": {"label": f"Tone SOP applied ({sent})", "pass": True}}
     else:
         return {"output": json_dumps({"error": "unknown tool"}), "display": None}
 

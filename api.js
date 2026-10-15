@@ -31,11 +31,12 @@ export const api = {
   reset: () => j("/api/reset", { method: "POST" }),
   scenarios: () => j("/api/scenarios"),
   runScenario: (id) => j("/api/scenario/run", { method: "POST", body: JSON.stringify({ id }) }),
-  feedback: (scenario_id, satisfied) =>
-    j("/api/feedback", { method: "POST", body: JSON.stringify({ scenario_id, satisfied }) }),
+  feedbackPresets: () => j("/api/feedback/presets"),
+  feedback: (payload) => j("/api/feedback", { method: "POST", body: JSON.stringify(payload) }),
   reviews: () => j("/api/learning/reviews"),
-  correct: (item_id, agent, correction) =>
-    j("/api/learning/correct", { method: "POST", body: JSON.stringify({ item_id, agent, correction }) }),
+  clearLearning: () => j("/api/learning/clear", { method: "POST" }),
+  correct: (item_id, instruction, action) =>
+    j("/api/learning/correct", { method: "POST", body: JSON.stringify({ item_id, instruction, action }) }),
   realtimeToken: (policy_id) =>
     j("/api/realtime/token", { method: "POST", body: JSON.stringify({ policy_id }) }),
   voiceTool: (policy_id, name, args) =>

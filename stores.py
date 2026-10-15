@@ -164,6 +164,8 @@ class LearningStore:
         rid = _id("RV")
         rec = {"id": rid, "status": "open", "created_at": _now(), **item}
         self.reviews[rid] = rec
+        if pg.ready():
+            pg.persist_review(rec)
         return rec
 
     @staticmethod

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { api } from "../api.js";
+import Thumbs from "../components/Thumbs.jsx";
 
 function confColor(c, low) {
   if (c < low) return "var(--red)";
@@ -13,24 +14,15 @@ export default function Scenarios({ go, onChange }) {
   const [active, setActive] = useState(null);
   const [run, setRun] = useState(null);
   const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState(null); // 'satisfied' | 'sent'
 
   useEffect(() => {
     api.scenarios().then((d) => { setList(d.scenarios); setLow(d.low_conf); });
   }, []);
 
   async function play(id) {
-    setActive(id); setResult(null); setBusy(true);
+    setActive(id); setBusy(true);
     const r = await api.runScenario(id);
     setRun(r); setBusy(false);
-  }
-  async function feedback(satisfied) {
-    if (!run) return;
-    setBusy(true);
-    await api.feedback(run.scenario_id, satisfied);
-    setResult(satisfied ? "satisfied" : "sent");
-    setBusy(false);
-    onChange && onChange();
   }
 
   if (!list) return <div className="empty">Loading scenarios…</div>;
@@ -42,6 +34,16 @@ export default function Scenarios({ go, onChange }) {
         <p>Pick a claim situation. The supporting agents answer with a <b>confidence score</b>. If
           you're not satisfied, send it to the Learning Studio — the low-confidence answers go to the
           top of the human-in-the-loop queue for correction, and the agent learns.</p>
+      </div>
+
+      <div className="row" style={{ marginBottom: 14 }}>
+        <button className="btn ghost sm" onClick={() => play("WRONG")}
+          style={{ color: "var(--coral)", borderColor: "var(--coral-dim)" }}>
+          ⚠ Generate a wrong-output example
+        </button>
+        <span className="muted" style={{ fontSize: 12 }}>
+          Adds one deliberately-wrong answer so you can catch it (👎) and train the fix.
+        </span>
       </div>
 
       <div className="grid" style={{ gridTemplateColumns: "340px 1fr", gap: 14, alignItems: "start" }}>
@@ -75,12 +77,22 @@ export default function Scenarios({ go, onChange }) {
                 <span className="chip">{run.customer}</span>
                 <h3 style={{ margin: 0 }}>{run.title}</h3>
               </div>
+              {run.wrong && (
+                <div className="banner" style={{ marginTop: 10, borderColor: "var(--red)", color: "var(--text)" }}>
+                  ⚠ This output is <b>deliberately wrong</b> (glass is subject to your comprehensive
+                  deductible — it isn't free). Thumbs it 👎 below, then open the Learning Studio and
+                  tell the agent what it should have said.
+                </div>
+              )}
               <div className="bubble customer" style={{ marginTop: 10, maxWidth: "100%" }}>
                 <div className="who">Customer · {run.customer}</div>{run.utterance}
               </div>
               <div className="muted" style={{ fontSize: 12, margin: "10px 0 4px" }}>Goal: {run.goal}</div>
 
               <div className="section-title" style={{ fontSize: 13, margin: "14px 0 8px" }}>Agent activity</div>
+              <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
+                👍 if the answer is good, 👎 to send that answer to the Learning Studio for a fix.
+              </div>
               <div className="grid" style={{ gap: 8 }}>
                 {run.activities.map((a, i) => (
                   <div key={i} className="fire">
@@ -92,32 +104,24 @@ export default function Scenarios({ go, onChange }) {
                       </span>
                     </div>
                     <div className="detail" style={{ color: "var(--text)" }}>{a.answer}</div>
-                    <span className="meter" style={{ width: 120, marginTop: 6 }}>
-                      <span style={{ width: Math.round(a.confidence * 100) + "%", background: confColor(a.confidence, low) }} />
-                    </span>
-                    {a.confidence < low && <span className="flag" style={{ marginLeft: 8 }}>low confidence</span>}
+                    <div className="row" style={{ marginTop: 7, justifyContent: "space-between" }}>
+                      <span>
+                        <span className="meter" style={{ width: 120 }}>
+                          <span style={{ width: Math.round(a.confidence * 100) + "%", background: confColor(a.confidence, low) }} />
+                        </span>
+                        {a.confidence < low && <span className="flag" style={{ marginLeft: 8 }}>low confidence</span>}
+                      </span>
+                      <Thumbs source="agent" agent={a.agent} agentName={a.name}
+                        context={run.utterance} answer={a.answer} confidence={a.confidence}
+                        scenarioId={run.scenario_id} onFlag={onChange} />
+                    </div>
                   </div>
                 ))}
               </div>
-
-              {/* Satisfied / Not satisfied */}
-              <div className="card pad" style={{ marginTop: 14, background: "var(--bg-2)" }}>
-                <div className="row">
-                  <b style={{ fontSize: 13 }}>Were these answers satisfactory?</b>
-                  <button className="btn sm" disabled={busy} onClick={() => feedback(true)}>👍 Satisfied</button>
-                  <button className="btn ghost sm" disabled={busy}
-                    style={{ color: "var(--coral)", borderColor: "var(--coral-dim)" }}
-                    onClick={() => feedback(false)}>👎 Not satisfied</button>
-                </div>
-                {result === "satisfied" && <div className="muted" style={{ fontSize: 12, marginTop: 10 }}>Marked satisfactory — no action taken.</div>}
-                {result === "sent" && (
-                  <div className="banner" style={{ marginTop: 10 }}>
-                    Sent to the <b>Learning Studio</b> review queue. The low-confidence answers are at
-                    the top for correction.{" "}
-                    <a href="#" onClick={(e) => { e.preventDefault(); go && go("learn"); }}
-                       style={{ color: "var(--coral)" }}>Open Learning Studio →</a>
-                  </div>
-                )}
+              <div className="banner" style={{ marginTop: 12 }}>
+                Flagged an answer? Open the <a href="#" onClick={(e) => { e.preventDefault(); go && go("learn"); }}
+                  style={{ color: "var(--coral)" }}>Learning Studio →</a> to correct it (make it crisper,
+                cite the clause, etc.) and the agent learns.
               </div>
             </div>
           )}
