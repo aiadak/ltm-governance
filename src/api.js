@@ -52,4 +52,6 @@ export const api = {
     j("/api/realtime/token", { method: "POST", body: JSON.stringify({ policy_id }) }),
   voiceTool: (policy_id, name, args) =>
     j("/api/voice/tool", { method: "POST", body: JSON.stringify({ policy_id, name, arguments: args }) }),
+  summarize: (policy_id, transcript, fires) =>
+    j("/api/voice/summarize", { method: "POST", body: JSON.stringify({ policy_id, transcript, fires }) }),
 };

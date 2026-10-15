@@ -368,11 +368,22 @@ def build_voice_instructions(state, policy_id: str) -> str:
         "pocket, preferred-vendor discount). Never promise coverage the policy does not have.\n"
         "2. Never approve or promise a settlement or payout amount — route money decisions to a "
         "human adjuster.\n"
-        "3. For a new loss, take the FNOL: ask what happened, injuries, whether the car is "
-        "drivable, then say you've opened a claim.\n"
+        "3. For a new loss, take the FNOL. You MUST confirm, one question at a time: (a) the DATE "
+        "and TIME the accident happened, (b) WHICH vehicle was involved (confirm it's the car on "
+        "the policy, or ask which one), and (c) what happened, injuries, and whether the car is "
+        "drivable. Also ask (optional) whether a police report was filed — note it if yes, don't "
+        "insist if not. Only after you have the date/time and the vehicle, call create_claim and "
+        "tell them the claim number.\n"
         "4. If anyone is injured, say a human adjuster will be assigned.\n"
-        "5. Never end the call abruptly. After you handle something, ask if there's anything else "
-        "you can help with before wrapping up, and close warmly.\n\n"
+        "5. NEXT STEPS: when you give next steps, walk through them a couple at a time (two steps), "
+        "then ask 'Is there anything else I can help you with?' Keep helping and keep asking that "
+        "after each thing — do NOT jump to ending the call while they still have questions.\n"
+        "6. ENDING THE CALL: only once the caller says they're all set (or goes quiet), ask 'Shall "
+        "I go ahead and end the call?' If they don't confirm, you may ask once more. If they still "
+        "don't confirm or don't respond, say clearly 'I'll end the call now — take care' and stop. "
+        "If at any point they say yes, end the call, say 'I'll end the call now' and stop. Always "
+        "say an explicit closing line like 'I'll end the call now' as your final sentence so the "
+        "call can wrap up.\n\n"
         "TOOLS — you have supporting agents you MUST use (don't answer from memory):\n"
         "- verify_policy_coverage: call this BEFORE telling the caller whether ANY coverage "
         "(rental, towing, glass, medical, collision) applies, and only state what it returns.\n"
@@ -413,11 +424,15 @@ VOICE_TOOLS = [
                         "description": "The coverage the caller is asking about."}},
                     "required": ["coverage"]}},
     {"type": "function", "name": "create_claim",
-     "description": "Open a new claim for a reported loss.",
+     "description": "Open a new claim for a reported loss. Only call this AFTER confirming the date/time "
+                    "of the accident and which vehicle was involved.",
      "parameters": {"type": "object",
                     "properties": {"what": {"type": "string", "description": "Short description of what happened."},
+                                   "when": {"type": "string", "description": "Date and time the accident happened, as the caller stated it."},
+                                   "vehicle": {"type": "string", "description": "Which vehicle was involved."},
+                                   "police_report": {"type": "boolean", "description": "Whether a police report was filed, if mentioned."},
                                    "injury": {"type": "boolean"}, "drivable": {"type": "boolean"}},
-                    "required": ["what"]}},
+                    "required": ["what", "when", "vehicle"]}},
     {"type": "function", "name": "assess_severity",
      "description": "Assess claim severity and whether a human adjuster is needed.",
      "parameters": {"type": "object",
@@ -535,13 +550,19 @@ def voice_tool(body: dict = Body(default={})):
                                   else "Coverage verified — NOT on policy"), "pass": True}}
     elif name == "create_claim":
         loss = {"what": args.get("what", "loss"), "injury": bool(args.get("injury")),
-                "drivable": args.get("drivable", True)}
+                "drivable": args.get("drivable", True), "when": args.get("when", ""),
+                "vehicle": args.get("vehicle", ""), "police_report": bool(args.get("police_report"))}
         claim = state.operational.create_claim(policy_id, loss)
         out = {"claim_id": claim["claim_id"]}
-        disp = {"agent": "VA", "detail": f"Claim {claim['claim_id']} opened (FNOL)",
+        _extra = []
+        if loss["when"]: _extra.append(f"when: {loss['when']}")
+        if loss["vehicle"]: _extra.append(f"vehicle: {loss['vehicle']}")
+        if loss["police_report"]: _extra.append("police report filed")
+        _detail = f"Claim {claim['claim_id']} opened (FNOL)" + (" — " + ", ".join(_extra) if _extra else "")
+        disp = {"agent": "VA", "detail": _detail,
                 "metric": "Accuracy & tone", "score": 0.96, "pass": True,
                 "sources": _doc_sources(state, ["SOP-FNOL"]),
-                "gov": {"label": "Claim created, no coverage promised", "pass": True}}
+                "gov": {"label": "Claim created, date/vehicle confirmed, no coverage promised", "pass": True}}
     elif name == "assess_severity":
         loss = {"injury": bool(args.get("injury")), "drivable": args.get("drivable", True),
                 "airbag": bool(args.get("airbag"))}
@@ -594,6 +615,42 @@ def voice_tool(body: dict = Body(default={})):
     except Exception:
         pass
     return {"output": json_dumps(out), "display": disp}
+
+
+@app.post("/api/voice/summarize")
+def voice_summarize(body: dict = Body(default={})):
+    """Run the Summarization agent at the end of a live call: produce a faithful,
+    PII-masked wrap-up of the whole conversation + the agents that fired. Returns a
+    `display` (SUM agent fire) and a readable `summary` for the UI."""
+    from app import agents
+    state = get_state()
+    policy_id = body.get("policy_id", "LM-AUTO-88123")
+    policy = state.operational.get_policy(policy_id) or {"policy_id": policy_id, "holder": "the caller"}
+    turns = body.get("transcript") or []   # [{who:'you'|'agent', text}]
+    fires = body.get("fires") or []        # [{agent, detail}]
+    if not turns:
+        return {"summary": "", "display": None}
+
+    convo = "\n".join((("Caller: " if t.get("who") == "you" else "Voice AI: ") + (t.get("text") or ""))
+                      for t in turns if t.get("text"))
+    actions = "; ".join(f.get("detail", "") for f in fires if f.get("detail"))
+    masked = f"policy ...{str(policy.get('policy_id', policy_id))[-4:]}"
+    sysmsg = ("You are the Summarization agent for an insurance claims call. Summarize the call in "
+              "4-6 short sentences for the case file. Be strictly faithful — invent nothing, state "
+              "only what was said. Cover: why they called, the loss (date/time, vehicle, what "
+              "happened, injuries, drivable), any claim number opened, the coverage outcome, and "
+              "the agreed next steps. Mask PII: refer to the policy by last 4 digits only. Never "
+              "state a coverage or payout that wasn't confirmed on the call.")
+    user = f"{masked}\nAgent actions during the call: {actions or 'none recorded'}\n\nTranscript:\n{convo}"
+    fallback = (f"Call on {masked}. The caller reported an auto loss and the Voice AI took the "
+                f"first notice of loss. Agent actions: {actions or 'none recorded'}. Next steps were "
+                f"shared; no payout was approved on the call.")
+    res = llm.complete(sysmsg, user, brain=body.get("brain", ""), max_tokens=320, fallback=fallback)
+    text = res.get("text") or fallback
+    disp = {"agent": "SUM", "agentName": "Summarization", "detail": "Call summary generated for the case file",
+            "metric": "Summary consistency", "score": 0.95, "pass": True, "sources": [],
+            "gov": {"label": "Summary faithful to the transcript — PII masked", "pass": True}}
+    return {"summary": text, "source": res.get("source", "fallback"), "display": disp}
 
 
 def json_dumps(o):

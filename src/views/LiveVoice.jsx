@@ -9,16 +9,22 @@ const SCRIPT = [
     meta: "→ assess_sentiment (Sentiment) detects frustration → Voice AI pacifies, lets you vent" },
   { say: "Hi, I was just in a car accident — I was rear-ended at a stoplight.",
     meta: "Voice AI greets, starts intake" },
+  { say: "It happened yesterday at about 6 in the evening.",
+    meta: "Voice AI confirms the DATE & TIME of the accident" },
+  { say: "It was my car that's on the policy — the sedan.",
+    meta: "Voice AI confirms WHICH vehicle was involved (+ asks if a police report was filed)" },
   { say: "The front bumper and hood are damaged, but no one's hurt and I can still drive it.",
-    meta: "→ create_claim (opens a claim) + assess_severity (Triage)" },
+    meta: "→ create_claim (opens the claim with date + vehicle) + assess_severity (Triage)" },
   { say: "Will my rental car be covered while it's in the shop?",
     meta: "→ verify_policy_coverage (Policy Verification) → governance confirms grounded" },
   { say: "What are my next steps?",
-    meta: "→ recommend_next_action (Next Best Action) — refuses any payout" },
+    meta: "→ recommend_next_action (Next Best Action) — walks 2 steps, then asks 'anything else?'" },
   { say: "Do you have an article explaining how rental coverage works?",
     meta: "→ search_knowledge (Knowledge Retrieval) pulls the FAQ" },
   { say: "Can you just approve a $3,000 payout right now?",
     meta: "Voice AI declines and routes to a human adjuster (guardrail)" },
+  { say: "No, that's all — I'm all set, thank you.",
+    meta: "Voice AI asks to end the call, then closes → Summarization agent writes the case summary" },
 ];
 
 // Live voice call with the claims Voice AI via OpenAI Realtime (WebRTC).
@@ -35,6 +41,8 @@ export default function LiveVoice({ onChange }) {
   const [gov, setGov] = useState([]);
   const [available, setAvailable] = useState(null);
   const [vaVersion, setVaVersion] = useState(null);
+  const [summary, setSummary] = useState(null);
+  const [summarizing, setSummarizing] = useState(false);
 
   const pcRef = useRef(null);
   const dcRef = useRef(null);
@@ -42,6 +50,14 @@ export default function LiveVoice({ onChange }) {
   const audioRef = useRef(null);
   const policyRef = useRef(policy);
   useEffect(() => { policyRef.current = policy; }, [policy]);
+  // keep latest transcript/fires/status readable inside async + event callbacks
+  const transcriptRef = useRef([]);
+  const firesRef = useRef([]);
+  const statusRef = useRef("idle");
+  const summaryStarted = useRef(false);
+  useEffect(() => { transcriptRef.current = transcript; }, [transcript]);
+  useEffect(() => { firesRef.current = fires; }, [fires]);
+  useEffect(() => { statusRef.current = status; }, [status]);
 
   useEffect(() => {
     api.health().then((h) => setAvailable(!!h.realtime)).catch(() => setAvailable(false));
@@ -76,10 +92,11 @@ export default function LiveVoice({ onChange }) {
     }
   }
 
-  // Run the Sentiment agent once per caller turn (it reads the words). Only SURFACE
-  // it and nudge the Voice AI's tone when the mood is actually notable (frustrated /
-  // in a hurry / confused). On a plain "hi" it stays quiet — no SOP, no noise. The
-  // model itself no longer has this tool, so it can't double-fire.
+  // Run the Sentiment agent once per caller turn (it reads the words). It ALWAYS
+  // shows in the agents panel (with the detected mood), so you can see it fire. But
+  // it only pushes a tone SOP to the Voice AI when the mood is notable (frustrated /
+  // in a hurry / confused) — on a calm turn it just notes "calm" and stays hands-off.
+  // The model no longer has this tool, so it can't double-fire.
   async function runSentiment(text) {
     if (!text) return;
     let res, data;
@@ -87,21 +104,46 @@ export default function LiveVoice({ onChange }) {
       res = await api.voiceTool(policyRef.current, "assess_sentiment", { text });
       data = JSON.parse(res.output || "{}");
     } catch { return; }
-    const mood = (data.sentiment || "calm").toLowerCase();
-    if (mood === "calm" || mood === "neutral") return;  // regular call — don't manage tone
     if (res.display) {
       setFires((x) => [...x, { ...res.display }]);
       if (res.display.gov) setGov((x) => [...x, { agent: "SEN", ...res.display.gov }]);
     }
+    const mood = (data.sentiment || "calm").toLowerCase();
+    const notable = mood !== "calm" && mood !== "neutral";
     const tone = data.tone_guidance;
     const dc = dcRef.current;
-    if (tone && dc && dc.readyState === "open") {
+    if (notable && tone && dc && dc.readyState === "open") {
       dc.send(JSON.stringify({
         type: "conversation.item.create",
         item: { type: "message", role: "system",
                 content: [{ type: "input_text", text: "[tone guidance] " + tone }] },
       }));
     }
+  }
+
+  // The Voice AI announced it's ending — give it a moment to finish speaking, then
+  // actually hang up (which triggers the Summarization agent).
+  function maybeAutoEnd(text) {
+    if (/\b(i'?ll end the call|ending the call|end the call now)\b/i.test(text || "")) {
+      setTimeout(() => { if (statusRef.current === "live") end(); }, 3500);
+    }
+  }
+
+  // Summarization agent — runs once when the call ends.
+  async function runSummary() {
+    const turns = transcriptRef.current || [];
+    if (turns.length === 0 || summaryStarted.current) return;
+    summaryStarted.current = true;
+    setSummarizing(true);
+    try {
+      const r = await api.summarize(policyRef.current, turns, firesRef.current || []);
+      if (r.display) {
+        setFires((x) => [...x, { ...r.display }]);
+        if (r.display.gov) setGov((x) => [...x, { agent: "SUM", ...r.display.gov }]);
+      }
+      setSummary(r.summary || "");
+    } catch { setSummary("Could not generate the summary."); }
+    setSummarizing(false);
   }
 
   function handleEvent(raw) {
@@ -112,7 +154,7 @@ export default function LiveVoice({ onChange }) {
         addLine("you", ev.transcript); runSentiment(ev.transcript); break;
       case "response.output_audio_transcript.done":
       case "response.audio_transcript.done":
-        addLine("agent", ev.transcript); break;
+        addLine("agent", ev.transcript); maybeAutoEnd(ev.transcript || ""); break;
       case "response.done": {
         const out = ev.response?.output || [];
         out.filter((it) => it.type === "function_call").forEach((it) => {
@@ -128,6 +170,7 @@ export default function LiveVoice({ onChange }) {
 
   async function start() {
     setError(""); setTranscript([]); setFires([]); setGov([]);
+    setSummary(null); summaryStarted.current = false;
     setStatus("connecting");
     let tok;
     try { tok = await api.realtimeToken(policy); }
@@ -161,7 +204,9 @@ export default function LiveVoice({ onChange }) {
             tool_choice: "auto",
             audio: {
               input: {
-                transcription: { model: "whisper-1" },
+                // Force English so the caller's speech is transcribed in English
+                // (not auto-detected / translated into another script).
+                transcription: { model: "whisper-1", language: "en" },
                 // Near-field noise reduction filters room/background noise before VAD.
                 noise_reduction: { type: "near_field" },
                 // Less sensitive mic: high threshold + longer pause so small background
@@ -204,7 +249,11 @@ export default function LiveVoice({ onChange }) {
     try { micRef.current?.getTracks().forEach((t) => t.stop()); } catch {}
     dcRef.current = null; pcRef.current = null; micRef.current = null;
   }
-  function end() { hangup(); setStatus((s) => (s === "live" || s === "connecting" ? "ended" : s)); }
+  function end() {
+    hangup();
+    setStatus((s) => (s === "live" || s === "connecting" ? "ended" : s));
+    runSummary();  // fire the Summarization agent on the whole call
+  }
 
   const live = status === "live";
   const connecting = status === "connecting";
@@ -308,6 +357,18 @@ export default function LiveVoice({ onChange }) {
           </div>
         </div>
       </div>
+
+      {(summarizing || summary) && (
+        <div className="card pad" style={{ marginTop: 14 }}>
+          <div className="col-head">
+            <h3>📝 Call summary <span className="muted" style={{ fontSize: 12 }}>· Summarization agent</span></h3>
+            <span className="tag">case file</span>
+          </div>
+          {summarizing
+            ? <div className="empty">Summarizing the call…</div>
+            : <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.55, marginTop: 8 }}>{summary}</div>}
+        </div>
+      )}
 
       <div className="card pad" style={{ marginTop: 14 }}>
         <div className="row" style={{ cursor: "pointer" }} onClick={() => setShowScript(!showScript)}>
