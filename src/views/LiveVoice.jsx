@@ -315,7 +315,6 @@ export default function LiveVoice({ onChange }) {
           <i>"{TRAP.question}"</i> — it will answer <b>wrong</b> (shown in red) so you can 👎 it and fix it
           in the Learning Studio. Once you've corrected it there, ask again and it answers right.
           <div className="row" style={{ marginTop: 8 }}>
-            <button className="btn sm" onClick={() => fireTrap(true)}>▶ Trigger it now</button>
             <button className="btn ghost sm" onClick={() => setArmed(false)}>Cancel</button>
           </div>
         </div>
