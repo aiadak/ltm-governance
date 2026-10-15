@@ -270,14 +270,31 @@ def feedback_route(body: dict = Body(default={})):
         "answer": body.get("answer", ""),               # the answer being flagged
         "confidence": body.get("confidence"),
         "scenario_id": body.get("scenario_id"),
+        "session_id": body.get("session_id", ""),       # scope to this browser session
     })
     return {"ok": True, "item": item}
 
 
+@app.post("/api/learning/clear")
+def learning_clear():
+    """Empty the learning data (review queue, improvements, learned versions) so the
+    Learning Studio is clean until the next thumbs-down. Explicit, user-triggered."""
+    state = get_state()
+    state.learning.reviews.clear()
+    state.learning.improvements.clear()
+    state.learning.versions.clear()
+    if pg.ready():
+        pg.clear_learning()
+    return {"ok": True}
+
+
 @app.get("/api/learning/reviews")
-def reviews_route():
+def reviews_route(session: str = ""):
     state = get_state()
     revs = sorted(state.learning.reviews.values(), key=lambda r: r["created_at"], reverse=True)
+    # only this browser session's flagged answers (blank at start, no past sessions)
+    if session:
+        revs = [r for r in revs if r.get("session_id") == session]
     return {"reviews": revs}
 
 
@@ -352,7 +369,9 @@ def build_voice_instructions(state, policy_id: str) -> str:
         "human adjuster.\n"
         "3. For a new loss, take the FNOL: ask what happened, injuries, whether the car is "
         "drivable, then say you've opened a claim.\n"
-        "4. If anyone is injured, say a human adjuster will be assigned.\n\n"
+        "4. If anyone is injured, say a human adjuster will be assigned.\n"
+        "5. Never end the call abruptly. After you handle something, ask if there's anything else "
+        "you can help with before wrapping up, and close warmly.\n\n"
         "TOOLS — you have supporting agents you MUST use (don't answer from memory):\n"
         "- verify_policy_coverage: call this BEFORE telling the caller whether ANY coverage "
         "(rental, towing, glass, medical, collision) applies, and only state what it returns.\n"

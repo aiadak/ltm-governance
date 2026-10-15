@@ -309,6 +309,11 @@ def persist_improvement(imp):
           json.dumps(imp.get("human_decision")), imp.get("deployed_version")))
 
 
+def clear_learning():
+    for t in ("reviews", "improvements", "agent_versions"):
+        _run(f"DELETE FROM {t}")
+
+
 def persist_version(agent, vobj):
     _run("INSERT INTO agent_versions (agent,version,prompt_addendum,history) VALUES (%s,%s,%s,%s) "
          "ON CONFLICT (agent) DO UPDATE SET version=EXCLUDED.version,"

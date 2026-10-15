@@ -20,7 +20,7 @@ const TABS = [
 ];
 
 export default function App() {
-  const [tab, setTab] = useState("ops");
+  const [tab, setTab] = useState("voice");
   const [health, setHealth] = useState(null);
   const [nonce, setNonce] = useState(0);
 

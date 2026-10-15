@@ -1,6 +1,17 @@
 // Thin API client. Uses relative /api (Vite proxy in dev, serverless in prod).
 const base = "";
 
+// A per-browser-session id so the Learning Studio only shows THIS session's
+// flagged answers (blank at start; past sessions never appear). sessionStorage
+// survives a refresh in the same tab, resets on a new tab / close.
+export function sessionId() {
+  try {
+    let s = sessionStorage.getItem("ltm_sid");
+    if (!s) { s = "S-" + Math.random().toString(36).slice(2, 10); sessionStorage.setItem("ltm_sid", s); }
+    return s;
+  } catch { return "S-mem"; }
+}
+
 async function j(path, opts) {
   const res = await fetch(base + path, {
     headers: { "Content-Type": "application/json" },
@@ -32,8 +43,9 @@ export const api = {
   scenarios: () => j("/api/scenarios"),
   runScenario: (id) => j("/api/scenario/run", { method: "POST", body: JSON.stringify({ id }) }),
   feedbackPresets: () => j("/api/feedback/presets"),
-  feedback: (payload) => j("/api/feedback", { method: "POST", body: JSON.stringify(payload) }),
-  reviews: () => j("/api/learning/reviews"),
+  feedback: (payload) => j("/api/feedback", { method: "POST", body: JSON.stringify({ ...payload, session_id: sessionId() }) }),
+  reviews: () => j(`/api/learning/reviews?session=${encodeURIComponent(sessionId())}`),
+  clearLearning: () => j("/api/learning/clear", { method: "POST" }),
   correct: (item_id, instruction, action) =>
     j("/api/learning/correct", { method: "POST", body: JSON.stringify({ item_id, instruction, action }) }),
   realtimeToken: (policy_id) =>

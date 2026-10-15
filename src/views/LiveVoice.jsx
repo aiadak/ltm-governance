@@ -155,7 +155,20 @@ export default function LiveVoice({ onChange }) {
             instructions: tok.instructions,
             tools: tok.tools || [],
             tool_choice: "auto",
-            audio: { input: { transcription: { model: "whisper-1" } } },
+            audio: {
+              input: {
+                transcription: { model: "whisper-1" },
+                // Less sensitive mic: higher threshold + longer pause so background
+                // noise / bumps don't trigger the agent. Tune threshold up if needed.
+                turn_detection: {
+                  type: "server_vad",
+                  threshold: 0.72,
+                  prefix_padding_ms: 300,
+                  silence_duration_ms: 850,
+                  create_response: true,
+                },
+              },
+            },
           },
         }));
         dc.send(JSON.stringify({ type: "response.create" }));
@@ -187,14 +200,27 @@ export default function LiveVoice({ onChange }) {
   }
   function end() { hangup(); setStatus((s) => (s === "live" || s === "connecting" ? "ended" : s)); }
 
+  // Demo helper: inject a deliberately WRONG answer (voice + agent) so you can
+  // catch it with 👎 and correct it in the Learning Studio — without needing the
+  // model to actually make a mistake.
+  function injectWrong() {
+    const q = "Is my windshield crack covered at no cost?";
+    lastCustomer.current = q;
+    setTranscript((t) => [...t,
+      { who: "you", text: q },
+      { who: "va", wrong: true, ctx: q,
+        text: "Good news — your windshield is completely covered at no cost to you." },
+    ]);
+    setFires((x) => [...x, {
+      agent: "COVERAGE", agentName: "Coverage Agent", metric: "Coverage correctness",
+      score: 0.86, pass: true, ctx: q, sources: [],
+      detail: "Glass/windshield is always covered for free, no deductible on any policy.",
+    }]);
+    setGov((x) => [...x, { agent: "COVERAGE", label: "⚠ unverified coverage claim", pass: false }]);
+  }
+
   const live = status === "live";
   const connecting = status === "connecting";
-  // section-level feedback: the latest voice reply, and the latest agent output
-  const vaLines = transcript.filter((m) => m.who === "va");
-  const lastVa = vaLines.length ? vaLines[vaLines.length - 1].text : "";
-  const recentAgents = fires.slice(-4);
-  const agentSummary = recentAgents.map((f) => `${f.agent}: ${f.detail}`).join("  •  ");
-  const lastAgent = recentAgents.length ? recentAgents[recentAgents.length - 1].agent : "VA";
 
   return (
     <div>
@@ -225,6 +251,11 @@ export default function LiveVoice({ onChange }) {
             {connecting ? "Connecting…" : "🎙 Start call"}
           </button>
         ) : (<button className="btn ghost" onClick={end}>■ End call</button>)}
+        <button className="btn ghost sm" onClick={injectWrong}
+          style={{ color: "var(--coral)", borderColor: "var(--coral-dim)" }}
+          title="Add a deliberately wrong answer you can thumbs-down and correct">
+          ⚠ Inject a wrong answer
+        </button>
         <span className="status-pill" style={{ marginLeft: "auto" }}>
           <span className={"dot" + (live ? "" : " sim")} />
           {live ? "LIVE — speak now" : connecting ? "connecting…" : status === "ended" ? "call ended" : "ready"}
@@ -238,23 +269,20 @@ export default function LiveVoice({ onChange }) {
 
       <div className="ops">
         <div className="card">
-          <div className="col-head">
-            <h3>🎧 You ↔ Voice AI</h3>
-            {lastVa && (
-              <span style={{ marginLeft: "auto" }}>
-                <span className="muted" style={{ fontSize: 11, marginRight: 6 }}>rate this reply</span>
-                <Thumbs key={"v" + vaLines.length} source="voice" agent="VA" agentName="Voice AI"
-                  context={lastCustomer.current} answer={lastVa} onFlag={onChange} />
-              </span>
-            )}
-          </div>
+          <div className="col-head"><h3>🎧 You ↔ Voice AI</h3><span className="tag">{policy}</span></div>
           <div className="col-body" style={{ minHeight: 320 }}>
             {transcript.length === 0 && (
               <div className="empty">{live ? "Listening… say hello, or ask about your claim." : "Press Start and begin talking."}</div>
             )}
             {transcript.map((m, i) => (
-              <div key={i} className={"bubble " + (m.who === "you" ? "customer" : "va")}>
-                <div className="who">{m.who === "you" ? "You" : "Voice AI"}</div>
+              <div key={i} className={"bubble " + (m.who === "you" ? "customer" : (m.wrong ? "err" : "va"))}>
+                <div className="who" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span>{m.who === "you" ? "You" : "Voice AI"}</span>
+                  {m.who === "va" && (
+                    <Thumbs key={"vb" + i + (m.text || "").length} source="voice" agent="VA" agentName="Voice AI"
+                      context={m.ctx || lastCustomer.current} answer={m.text} onFlag={onChange} />
+                  )}
+                </div>
                 {m.text}
               </div>
             ))}
@@ -262,16 +290,7 @@ export default function LiveVoice({ onChange }) {
         </div>
 
         <div className="card">
-          <div className="col-head">
-            <h3>⚙ Supporting agents</h3>
-            {recentAgents.length > 0 && (
-              <span style={{ marginLeft: "auto" }}>
-                <span className="muted" style={{ fontSize: 11, marginRight: 6 }}>rate this output</span>
-                <Thumbs key={"a" + fires.length} source="agent" agent={lastAgent} agentName="Supporting agents"
-                  context={lastCustomer.current} answer={agentSummary} onFlag={onChange} />
-              </span>
-            )}
-          </div>
+          <div className="col-head"><h3>⚙ Supporting agents</h3><span className="tag">live</span></div>
           <div className="col-body" style={{ minHeight: 320 }}>
             {fires.length === 0 && <div className="empty">Agents fire here as the Voice AI consults them.</div>}
             {fires.map((f, i) => (
@@ -284,7 +303,11 @@ export default function LiveVoice({ onChange }) {
                   </span>
                 </div>
                 <div className="detail">{f.detail}</div>
-                <Sources list={f.sources} />
+                <div className="row" style={{ justifyContent: "space-between", marginTop: 4 }}>
+                  <Sources list={f.sources} />
+                  <Thumbs key={"af" + i} source="agent" agent={f.agent} agentName={f.agentName || f.agent}
+                    context={f.ctx || lastCustomer.current} answer={f.detail} onFlag={onChange} />
+                </div>
               </div>
             ))}
           </div>

@@ -116,8 +116,8 @@ export default function Learning({ nonce, onChange }) {
   if (!data) return <div className="empty">Loading learning studio…</div>;
 
   const imps = data.improvements;
-  const versions = data.versions || {};
-  const learned = Object.entries(versions).filter(([, v]) => (v.version || 1) > 1);
+  // what you've trained THIS session = resolved reviews from this session
+  const sessionTrained = reviews.filter((r) => r.status === "resolved" && r.instruction);
 
   async function applyCorrection(id, instruction) {
     setBusy(id); await api.correct(id, instruction); await load(); onChange && onChange(); setBusy("");
@@ -127,9 +127,12 @@ export default function Learning({ nonce, onChange }) {
   }
   async function act(fn, id) { setBusy(id); await fn(); await load(); onChange && onChange(); setBusy(""); }
   const doReview = (id, action, addendum = "") => act(() => api.review(id, action, addendum), id);
+  async function clearAll() {
+    if (!window.confirm("Clear the learning queue and reset what the agents have learned? This can't be undone.")) return;
+    setBusy("clear"); await api.clearLearning(); await load(); onChange && onChange(); setBusy("");
+  }
 
   const openReviews = reviews.filter((r) => r.status === "open");
-  const doneReviews = reviews.filter((r) => r.status !== "open");
 
   return (
     <div>
@@ -141,11 +144,17 @@ export default function Learning({ nonce, onChange }) {
       </div>
 
       {/* ---- the main event: answers you flagged ---- */}
-      <div className="section-title">To review · {openReviews.length} flagged answer{openReviews.length === 1 ? "" : "s"}</div>
+      <div className="row" style={{ justifyContent: "space-between" }}>
+        <div className="section-title">To review · {openReviews.length} flagged answer{openReviews.length === 1 ? "" : "s"}</div>
+        {reviews.length > 0 && (
+          <button className="btn ghost sm" disabled={busy === "clear"} onClick={clearAll}
+            style={{ color: "var(--muted)" }}>Clear all</button>
+        )}
+      </div>
       {openReviews.length === 0 && (
         <div className="card pad empty">
-          Nothing to review. Thumbs-down any answer in <b>Live Voice</b>, <b>Live Ops</b> or
-          <b> Scenarios</b> and it appears here for you to correct.
+          Nothing to review yet. Thumbs-down any answer in <b>Live Voice</b> or <b>Scenarios</b> and
+          it appears here for you to correct. (Starts blank each session.)
         </div>
       )}
       {openReviews.map((rv) => (
@@ -153,34 +162,25 @@ export default function Learning({ nonce, onChange }) {
           onApply={applyCorrection} onReject={rejectCorrection} />
       ))}
 
-      {/* ---- what the agents have learned so far ---- */}
-      {learned.length > 0 && (
+      {/* ---- what you've trained THIS session ---- */}
+      {sessionTrained.length > 0 && (
         <>
-          <div className="section-title">What your agents have learned</div>
+          <div className="section-title">Trained this session · {sessionTrained.length}</div>
           <div className="card pad">
-            {learned.map(([agent, v]) => (
-              <div key={agent} style={{ padding: "10px 0", borderBottom: "1px solid var(--line)" }}>
+            {sessionTrained.map((r) => (
+              <div key={r.id} style={{ padding: "10px 0", borderBottom: "1px solid var(--line)" }}>
                 <div className="row">
-                  <span className="chip agent">{agent === "VA" ? "VOICE AI" : agent}</span>
-                  <span className="ver">v{v.version}</span>
-                  <span className="muted" style={{ fontSize: 12 }}>{(v.history || []).length} lesson(s) learned</span>
+                  <span className={"src-tag " + (r.source === "voice" ? "voice" : "agent")}>
+                    {r.source === "voice" ? "🎙 VOICE AI" : "⚙ " + (r.agent_name || r.agent)}
+                  </span>
+                  <span className="ver">{r.target} v{r.new_version}</span>
                 </div>
-                <ul style={{ margin: "8px 0 0", paddingLeft: 20, fontSize: 13, lineHeight: 1.7 }}>
-                  {(v.history || []).map((h, i) => <li key={i}>{h.delta || h.addendum}</li>)}
-                </ul>
+                <div style={{ fontSize: 13, marginTop: 6 }}>
+                  You taught it: <span className="muted">"{r.instruction}"</span>
+                </div>
               </div>
             ))}
           </div>
-        </>
-      )}
-
-      {doneReviews.length > 0 && (
-        <>
-          <div className="section-title">Recently trained</div>
-          {doneReviews.slice(0, 6).map((rv) => (
-            <ReviewCard key={rv.id} rv={rv} presets={presetsFor(rv)} busy={busy}
-              onApply={applyCorrection} onReject={rejectCorrection} />
-          ))}
         </>
       )}
 
