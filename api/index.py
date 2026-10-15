@@ -231,19 +231,28 @@ def scenario_run_route(body: dict = Body(default={})):
     return scenarios.run_scenario(body.get("id", ""))
 
 
-# Quick-pick correction presets (the "give me options" on an unsatisfied answer).
-EDIT_PRESETS = [
+# Quick-pick correction presets. Two loops:
+#  - VOICE: how the Voice AI should SAY it (tone / length / style)
+#  - AGENT: how a supporting agent should BEHAVE / what's expected of it
+VOICE_PRESETS = [
     {"id": "crisp", "label": "Make it crisper", "instruction": "Keep this answer to 1–2 short sentences — crisp and to the point, no over-explaining."},
     {"id": "warm", "label": "Warmer / more empathetic", "instruction": "Open by acknowledging the customer's situation with empathy, then answer."},
     {"id": "plain", "label": "Less jargon", "instruction": "Use plain, everyday language — no insurance jargon or internal terms."},
     {"id": "clause", "label": "Cite the exact clause", "instruction": "Ground the answer in the specific policy clause and name it."},
     {"id": "nextstep", "label": "Add a clear next step", "instruction": "End with one clear next step or call to action for the customer."},
 ]
+AGENT_PRESETS = [
+    {"id": "cite", "label": "Should cite the policy clause", "instruction": "This agent must ground its answer in — and name — the specific policy clause or document."},
+    {"id": "escalate", "label": "Should escalate to a human", "instruction": "In this situation the agent should route to a licensed human adjuster rather than resolve it automatically."},
+    {"id": "source", "label": "Used the wrong source", "instruction": "The agent pulled the wrong document/article — it must use the correct source for this type of question."},
+    {"id": "compliant", "label": "Was not compliant", "instruction": "The agent must follow the compliance guardrail here (never approve a payout, cite exclusions, no admitting fault)."},
+    {"id": "behave", "label": "Wrong behaviour", "instruction": "Describe what this agent is expected to do in this case."},
+]
 
 
 @app.get("/api/feedback/presets")
 def feedback_presets():
-    return {"presets": EDIT_PRESETS}
+    return {"voice": VOICE_PRESETS, "agent": AGENT_PRESETS}
 
 
 @app.post("/api/feedback")

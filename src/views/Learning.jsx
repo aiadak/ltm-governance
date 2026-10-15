@@ -41,7 +41,8 @@ function ReviewCard({ rv, presets, busy, onApply, onReject }) {
       {open && (
         <>
           <div className="muted" style={{ fontSize: 13, margin: "12px 0 8px", color: "var(--text)" }}>
-            <b>How should it answer instead?</b> Pick one, or write your own.
+            <b>{srcVoice ? "How should it say it instead?" : "How should this agent behave — what did you expect?"}</b>{" "}
+            Pick one, or write your own.
           </div>
           <div className="row" style={{ gap: 8, marginBottom: 10 }}>
             {presets.map((p) => (
@@ -100,7 +101,7 @@ function Flow({ imp }) {
 export default function Learning({ nonce, onChange }) {
   const [data, setData] = useState(null);
   const [reviews, setReviews] = useState([]);
-  const [presets, setPresets] = useState([]);
+  const [presets, setPresets] = useState({ voice: [], agent: [] });
   const [busy, setBusy] = useState("");
   const [editing, setEditing] = useState(null);
   const [draft, setDraft] = useState("");
@@ -110,7 +111,8 @@ export default function Learning({ nonce, onChange }) {
     api.learning().then(setData),
     api.reviews().then((d) => setReviews(d.reviews)),
   ]);
-  useEffect(() => { load(); api.feedbackPresets().then((d) => setPresets(d.presets)).catch(() => {}); }, [nonce]);
+  useEffect(() => { load(); api.feedbackPresets().then((d) => setPresets({ voice: d.voice || [], agent: d.agent || [] })).catch(() => {}); }, [nonce]);
+  const presetsFor = (rv) => (rv.source === "voice" ? presets.voice : presets.agent);
   if (!data) return <div className="empty">Loading learning studio…</div>;
 
   const imps = data.improvements;
@@ -147,7 +149,7 @@ export default function Learning({ nonce, onChange }) {
         </div>
       )}
       {openReviews.map((rv) => (
-        <ReviewCard key={rv.id} rv={rv} presets={presets} busy={busy}
+        <ReviewCard key={rv.id} rv={rv} presets={presetsFor(rv)} busy={busy}
           onApply={applyCorrection} onReject={rejectCorrection} />
       ))}
 
@@ -176,7 +178,7 @@ export default function Learning({ nonce, onChange }) {
         <>
           <div className="section-title">Recently trained</div>
           {doneReviews.slice(0, 6).map((rv) => (
-            <ReviewCard key={rv.id} rv={rv} presets={presets} busy={busy}
+            <ReviewCard key={rv.id} rv={rv} presets={presetsFor(rv)} busy={busy}
               onApply={applyCorrection} onReject={rejectCorrection} />
           ))}
         </>

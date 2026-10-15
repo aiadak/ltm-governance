@@ -36,6 +36,16 @@ export default function Scenarios({ go, onChange }) {
           top of the human-in-the-loop queue for correction, and the agent learns.</p>
       </div>
 
+      <div className="row" style={{ marginBottom: 14 }}>
+        <button className="btn ghost sm" onClick={() => play("WRONG")}
+          style={{ color: "var(--coral)", borderColor: "var(--coral-dim)" }}>
+          ⚠ Generate a wrong-output example
+        </button>
+        <span className="muted" style={{ fontSize: 12 }}>
+          Adds one deliberately-wrong answer so you can catch it (👎) and train the fix.
+        </span>
+      </div>
+
       <div className="grid" style={{ gridTemplateColumns: "340px 1fr", gap: 14, alignItems: "start" }}>
         {/* scenario list */}
         <div className="card">
@@ -67,6 +77,13 @@ export default function Scenarios({ go, onChange }) {
                 <span className="chip">{run.customer}</span>
                 <h3 style={{ margin: 0 }}>{run.title}</h3>
               </div>
+              {run.wrong && (
+                <div className="banner" style={{ marginTop: 10, borderColor: "var(--red)", color: "var(--text)" }}>
+                  ⚠ This output is <b>deliberately wrong</b> (glass is subject to your comprehensive
+                  deductible — it isn't free). Thumbs it 👎 below, then open the Learning Studio and
+                  tell the agent what it should have said.
+                </div>
+              )}
               <div className="bubble customer" style={{ marginTop: 10, maxWidth: "100%" }}>
                 <div className="who">Customer · {run.customer}</div>{run.utterance}
               </div>

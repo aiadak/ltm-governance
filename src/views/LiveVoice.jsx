@@ -76,12 +76,36 @@ export default function LiveVoice({ onChange }) {
     }
   }
 
+  // Auto-run the Sentiment agent on every caller turn (reads the words) so it
+  // always fires, and nudge the Voice AI to adapt its tone.
+  async function runSentiment(text) {
+    if (!text) return;
+    let res;
+    try { res = await api.voiceTool(policyRef.current, "assess_sentiment", { text }); }
+    catch { return; }
+    if (res.display) {
+      setFires((x) => [...x, { ...res.display }]);
+      if (res.display.gov) setGov((x) => [...x, { agent: "SEN", ...res.display.gov }]);
+    }
+    try {
+      const tone = JSON.parse(res.output || "{}").tone_guidance;
+      const dc = dcRef.current;
+      if (tone && dc && dc.readyState === "open") {
+        dc.send(JSON.stringify({
+          type: "conversation.item.create",
+          item: { type: "message", role: "system",
+                  content: [{ type: "input_text", text: "[tone guidance] " + tone }] },
+        }));
+      }
+    } catch {}
+  }
+
   function handleEvent(raw) {
     let ev;
     try { ev = JSON.parse(raw); } catch { return; }
     switch (ev.type) {
       case "conversation.item.input_audio_transcription.completed":
-        addLine("you", ev.transcript); break;
+        addLine("you", ev.transcript); runSentiment(ev.transcript); break;
       case "response.output_audio_transcript.done":
       case "response.audio_transcript.done":
         addLine("agent", ev.transcript); break;
@@ -165,6 +189,12 @@ export default function LiveVoice({ onChange }) {
 
   const live = status === "live";
   const connecting = status === "connecting";
+  // section-level feedback: the latest voice reply, and the latest agent output
+  const vaLines = transcript.filter((m) => m.who === "va");
+  const lastVa = vaLines.length ? vaLines[vaLines.length - 1].text : "";
+  const recentAgents = fires.slice(-4);
+  const agentSummary = recentAgents.map((f) => `${f.agent}: ${f.detail}`).join("  •  ");
+  const lastAgent = recentAgents.length ? recentAgents[recentAgents.length - 1].agent : "VA";
 
   return (
     <div>
@@ -208,20 +238,23 @@ export default function LiveVoice({ onChange }) {
 
       <div className="ops">
         <div className="card">
-          <div className="col-head"><h3>🎧 You ↔ Voice AI</h3><span className="tag">{policy}</span></div>
+          <div className="col-head">
+            <h3>🎧 You ↔ Voice AI</h3>
+            {lastVa && (
+              <span style={{ marginLeft: "auto" }}>
+                <span className="muted" style={{ fontSize: 11, marginRight: 6 }}>rate this reply</span>
+                <Thumbs key={"v" + vaLines.length} source="voice" agent="VA" agentName="Voice AI"
+                  context={lastCustomer.current} answer={lastVa} onFlag={onChange} />
+              </span>
+            )}
+          </div>
           <div className="col-body" style={{ minHeight: 320 }}>
             {transcript.length === 0 && (
               <div className="empty">{live ? "Listening… say hello, or ask about your claim." : "Press Start and begin talking."}</div>
             )}
             {transcript.map((m, i) => (
               <div key={i} className={"bubble " + (m.who === "you" ? "customer" : "va")}>
-                <div className="who" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <span>{m.who === "you" ? "You" : "Voice AI"}</span>
-                  {m.who === "va" && (
-                    <Thumbs source="voice" agent="VA" agentName="Voice AI"
-                      context={lastCustomer.current} answer={m.text} onFlag={onChange} />
-                  )}
-                </div>
+                <div className="who">{m.who === "you" ? "You" : "Voice AI"}</div>
                 {m.text}
               </div>
             ))}
@@ -229,7 +262,16 @@ export default function LiveVoice({ onChange }) {
         </div>
 
         <div className="card">
-          <div className="col-head"><h3>⚙ Supporting agents</h3><span className="tag">live</span></div>
+          <div className="col-head">
+            <h3>⚙ Supporting agents</h3>
+            {recentAgents.length > 0 && (
+              <span style={{ marginLeft: "auto" }}>
+                <span className="muted" style={{ fontSize: 11, marginRight: 6 }}>rate this output</span>
+                <Thumbs key={"a" + fires.length} source="agent" agent={lastAgent} agentName="Supporting agents"
+                  context={lastCustomer.current} answer={agentSummary} onFlag={onChange} />
+              </span>
+            )}
+          </div>
           <div className="col-body" style={{ minHeight: 320 }}>
             {fires.length === 0 && <div className="empty">Agents fire here as the Voice AI consults them.</div>}
             {fires.map((f, i) => (
@@ -242,11 +284,7 @@ export default function LiveVoice({ onChange }) {
                   </span>
                 </div>
                 <div className="detail">{f.detail}</div>
-                <div className="row" style={{ justifyContent: "space-between", marginTop: 4 }}>
-                  <Sources list={f.sources} />
-                  <Thumbs source="agent" agent={f.agent} agentName={f.agent}
-                    context={lastCustomer.current} answer={f.detail} onFlag={onChange} />
-                </div>
+                <Sources list={f.sources} />
               </div>
             ))}
           </div>
