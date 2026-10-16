@@ -19,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.stores import get_state, reset_state
 from app.agents import AGENTS, A
 from app.governance import GOV_ACTORS
-from app import orchestrator, learning, llm, db, observability
+from app import orchestrator, learning, llm, db, observability, metrics
 from app import pg, scenarios
 
 app = FastAPI(title="LTM Governed Contact Center")
@@ -187,67 +187,67 @@ def dashboard_route():
 
 @app.get("/api/metrics")
 def metrics_route():
-    """Observability / governance metrics for the command center dashboard: tool
-    calling, token economics, latency percentiles, eval pass-rates. Braintrust
-    numbers when a key is set; otherwise consistent simulated demo telemetry so the
-    dashboard is populated. Values are deterministic per agent so they don't jitter."""
+    """Command-center observability. REAL numbers measured from this instance's
+    live activity (every agent fire + every LLM call records its latency/tokens).
+    Before any calls have happened it shows a representative baseline and says so
+    (mode 'warming up'), so the dashboard is never blank and never fabricated once
+    the demo is running."""
     state = get_state()
     cards = agent_scorecard(state)
     open_reviews = [r for r in state.learning.reviews.values() if r["status"] == "open"]
     corrections = sum(max(0, state.learning.current_version(a["id"]) - 1) for a in AGENTS)
-    pass_rate = round(sum(c["score"] for c in cards) / len(cards)) if cards else 0
     bt = observability.status()
+    snap = metrics.snapshot()
 
-    # Deterministic per-agent telemetry (stable across refreshes). Latency seeded by
-    # a hash of the agent id so the numbers look real but never jitter.
-    import hashlib
-    def seed(aid): return int(hashlib.md5(aid.encode()).hexdigest()[:6], 16)
-    per_agent = []
-    total_calls = 0
-    tokens_in = tokens_out = 0
-    lat_p50s, lat_p95s, lat_p99s = [], [], []
-    for a in AGENTS:
-        s = seed(a["id"])
-        calls = 40 + s % 160              # 40..199 calls
-        p50 = 180 + s % 220               # 180..399 ms
-        p95 = p50 + 240 + s % 360         # + 240..599
-        p99 = p95 + 180 + s % 300
-        tin = calls * (320 + s % 180)
-        tout = calls * (90 + s % 110)
-        card = next((c for c in cards if c["id"] == a["id"]), {"score": 90, "metric": a["metric"]})
-        total_calls += calls
-        tokens_in += tin
-        tokens_out += tout
-        lat_p50s.append(p50); lat_p95s.append(p95); lat_p99s.append(p99)
-        per_agent.append({
-            "id": a["id"], "name": a["name"], "metric": a["metric"],
-            "calls": calls, "pass_rate": card["score"],
-            "p50_ms": p50, "p95_ms": p95,
-            "tool_success": round(96 + s % 4 - (0 if card["score"] >= 85 else 6), 1),
-        })
+    name_of = {a["id"]: a["name"] for a in AGENTS}
+    metric_of = {a["id"]: a["metric"] for a in AGENTS}
 
-    def pct(vals, hi):  # weighted percentile across agents
-        return int(sum(vals) / len(vals)) if vals else 0
+    if snap["has_data"]:
+        # ---- REAL telemetry from this running instance ----
+        per_agent = []
+        for aid, d in snap["per_agent"].items():
+            per_agent.append({
+                "id": aid, "name": name_of.get(aid, aid), "metric": metric_of.get(aid, "Quality"),
+                "calls": d["calls"], "pass_rate": round(d["pass_rate"]),
+                "p50_ms": d["p50_ms"], "p95_ms": d["p95_ms"],
+                "tool_success": d["pass_rate"],
+            })
+        per_agent.sort(key=lambda x: -x["calls"])
+        tin, tout = snap["tokens"]["input"], snap["tokens"]["output"]
+        est_cost = round(tin / 1e6 * 3 + tout / 1e6 * 15, 2)
+        return {
+            "mode": "live" if (bt["configured"] or snap["llm_calls"] > 0) else "measured",
+            "braintrust": {"configured": bt["configured"], "project": bt.get("project"),
+                           "mode": "live" if bt["configured"] else "off"},
+            "kpis": {
+                "agent_calls": snap["agent_calls"],
+                "tool_success_rate": snap["pass_rate"],
+                "gov_pass_rate": round(snap["pass_rate"]),
+                "flagged_for_review": len(open_reviews),
+                "human_corrections": corrections,
+                "agents_live": len(AGENTS),
+            },
+            "latency_ms": snap["latency_ms"],
+            "tokens": {"input": tin, "output": tout, "total": tin + tout, "est_cost_usd": est_cost},
+            "tool_calling": {"total_calls": snap["agent_calls"], "success_rate": snap["pass_rate"]},
+            "evals": per_agent,
+        }
 
-    total_tokens = tokens_in + tokens_out
-    # rough blended cost: $3/M input, $15/M output (illustrative)
-    est_cost = round(tokens_in / 1e6 * 3 + tokens_out / 1e6 * 15, 2)
-
+    # ---- no activity yet: representative baseline, clearly labelled ----
+    pass_rate = round(sum(c["score"] for c in cards) / len(cards)) if cards else 0
+    per_agent = [{"id": a["id"], "name": a["name"], "metric": a["metric"],
+                  "calls": 0, "pass_rate": next((c["score"] for c in cards if c["id"] == a["id"]), 90),
+                  "p50_ms": 0, "p95_ms": 0, "tool_success": 0.0} for a in AGENTS]
     return {
+        "mode": "warming up",
         "braintrust": {"configured": bt["configured"], "project": bt.get("project"),
-                       "mode": "live" if bt["configured"] else "simulated"},
-        "kpis": {
-            "agent_calls": total_calls,
-            "tool_success_rate": round(sum(p["tool_success"] for p in per_agent) / len(per_agent), 1) if per_agent else 0,
-            "gov_pass_rate": pass_rate,
-            "flagged_for_review": len(open_reviews),
-            "human_corrections": corrections,
-            "agents_live": len(AGENTS),
-        },
-        "latency_ms": {"p50": pct(lat_p50s, 50), "p95": pct(lat_p95s, 95), "p99": pct(lat_p99s, 99)},
-        "tokens": {"input": tokens_in, "output": tokens_out, "total": total_tokens, "est_cost_usd": est_cost},
-        "tool_calling": {"total_calls": total_calls,
-                         "success_rate": round(sum(p["tool_success"] for p in per_agent) / len(per_agent), 1) if per_agent else 0},
+                       "mode": "live" if bt["configured"] else "off"},
+        "kpis": {"agent_calls": 0, "tool_success_rate": 0.0, "gov_pass_rate": pass_rate,
+                 "flagged_for_review": len(open_reviews), "human_corrections": corrections,
+                 "agents_live": len(AGENTS)},
+        "latency_ms": {"p50": 0, "p95": 0, "p99": 0},
+        "tokens": {"input": 0, "output": 0, "total": 0, "est_cost_usd": 0.0},
+        "tool_calling": {"total_calls": 0, "success_rate": 0.0},
         "evals": per_agent,
     }
 
@@ -624,6 +624,8 @@ def voice_tool(body: dict = Body(default={})):
     + a governance check. Returns `output` (JSON string the model consumes) and
     `display` (agent firing + governance check for the live UI panels)."""
     from app import agents, governance, observability
+    import time as _time
+    _t0 = _time.perf_counter()
     state = get_state()
     policy_id = body.get("policy_id", "LM-AUTO-88123")
     name = body.get("name", "")
@@ -758,6 +760,11 @@ def voice_tool(body: dict = Body(default={})):
             metadata={"policy_id": policy_id, "component": "live_voice"})])
     except Exception:
         pass
+    try:
+        metrics.record_agent(disp.get("agent", name), (_time.perf_counter() - _t0) * 1000.0,
+                             disp.get("pass", True))
+    except Exception:
+        pass
     return {"output": json_dumps(out), "display": disp}
 
 
@@ -835,9 +842,54 @@ def _classify_turn(text: str):
     return hits
 
 
+INTENT_VOCAB = ["accident", "coverage", "dispute", "status", "repair", "payment",
+                "fraud", "payout", "nextsteps"]
+_INTENT_GUIDE = (
+    "You route an insurance claims caller's utterance to the supporting agents that "
+    "should handle it. Choose ONLY the intents that genuinely apply (often 1, sometimes "
+    "2-3; none for small talk). Intents:\n"
+    "- accident: reporting a new loss / crash / FNOL\n"
+    "- coverage: asking whether something is covered (rental, glass, towing, deductible)\n"
+    "- dispute: disagreeing with a coverage/claim decision\n"
+    "- status: asking about an existing claim's status\n"
+    "- repair: repair cost / estimate / body shop\n"
+    "- payment: a reimbursement or payment that is delayed or missing\n"
+    "- fraud: multiple vehicles / other parties / inconsistent details\n"
+    "- payout: asking to approve money / advance / settlement now\n"
+    "- nextsteps: asking what to do next\n"
+    "Return ONLY a compact JSON array of intent strings, e.g. [\"accident\"]. Empty [] for small talk."
+)
+
+
+def _llm_intents(text: str):
+    """Use the LLM brain to pick applicable intents. Returns a validated list, or
+    None when no brain is available / parsing fails (caller then uses keywords)."""
+    if not text or not text.strip():
+        return []
+    res = llm.complete(_INTENT_GUIDE, f"Utterance: {text}", max_tokens=60, fallback="")
+    if res.get("source") == "simulated" or not res.get("text"):
+        return None
+    try:
+        import json as _json
+        t = res["text"]
+        s, e = t.find("["), t.rfind("]")
+        if s < 0 or e <= s:
+            return None
+        arr = _json.loads(t[s:e + 1])
+        picked = [x for x in arr if isinstance(x, str) and x in INTENT_VOCAB]
+        # same overlap hygiene as the keyword path
+        if "dispute" in picked:
+            picked = [h for h in picked if h not in ("accident", "coverage")]
+        return picked
+    except Exception:
+        return None
+
+
 @app.post("/api/voice/turn")
 def voice_turn(body: dict = Body(default={})):
     from app import agents
+    import time as _time
+    _t0 = _time.perf_counter()
     state = get_state()
     policy_id = body.get("policy_id", "LM-AUTO-88123")
     text = body.get("text", "")
@@ -848,7 +900,13 @@ def voice_turn(body: dict = Body(default={})):
     rr = cov.get("rental_reimbursement", {}) or {}
     decl = [DECL_DOC.get(policy_id)] if DECL_DOC.get(policy_id) else []
 
-    intents = _classify_turn(text)
+    # Intelligent routing: let the LLM pick the relevant agents; fall back to the
+    # keyword classifier when there's no brain available.
+    intents = _llm_intents(text)
+    route = "llm"
+    if intents is None:
+        intents = _classify_turn(text)
+        route = "keyword"
     acts = []
     seen = set()
 
@@ -944,7 +1002,13 @@ def voice_turn(body: dict = Body(default={})):
         add(_ta("NBA", "Two things next: upload the photos/estimate, then I'll schedule the adjuster. Is there anything "
                 "else I can help you with?", 0.74, "Recommendation correctness", sources=["KB-NEXT-STEPS"]))
 
-    return {"activities": acts, "intents": intents}
+    # Real telemetry: record each fired agent with the measured turn latency and its
+    # governance pass/fail, so the Command Center KPIs reflect actual activity.
+    elapsed = (_time.perf_counter() - _t0) * 1000.0
+    for a in acts:
+        passed = a.get("gov", {}).get("pass", True)
+        metrics.record_agent(a["agent"], elapsed, passed)
+    return {"activities": acts, "intents": intents, "route": route}
 
 
 @app.post("/api/voice/summarize")

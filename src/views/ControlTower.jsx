@@ -40,7 +40,13 @@ export default function ControlTower({ nonce }) {
       {m && (
         <>
           <div className="row" style={{ justifyContent: "space-between", alignItems: "center", margin: "0 0 10px" }}>
-            <div className="section-title" style={{ margin: 0 }}>Observability</div>
+            <div className="section-title" style={{ margin: 0 }}>
+              Observability
+              <span className="mono muted" style={{ fontSize: 11, marginLeft: 8, textTransform: "none", letterSpacing: 0 }}>
+                {m.mode === "warming up" ? "· warming up — run a call to populate"
+                  : m.mode === "live" ? "· live telemetry" : "· measured this session"}
+              </span>
+            </div>
             <span className="status-pill" title="Braintrust tracing">
               <span className={"dot" + (m.braintrust.configured ? "" : " sim")} />
               Braintrust · {m.braintrust.mode}{m.braintrust.project ? ` · ${m.braintrust.project}` : ""}

@@ -120,9 +120,10 @@ export default function LiveVoice({ onChange }) {
     });
   }
 
-  // Run the Sentiment agent once per caller turn (it reads the words). It ALWAYS
-  // shows in the agents panel (with the detected mood). It only pushes a tone SOP to
-  // the Voice AI when the mood is notable (frustrated / in a hurry / confused).
+  // Sentiment does a quiet mood check every caller turn, but ONLY surfaces (fires in
+  // the panel + nudges the Voice AI's tone) when the mood actually spoils — frustrated,
+  // rushed or confused. While the caller is calm it stays silent, so a normal call
+  // isn't cluttered with a "mood: calm" line every turn.
   async function runSentiment(text) {
     if (!text) return;
     let res, data;
@@ -130,17 +131,18 @@ export default function LiveVoice({ onChange }) {
       res = await api.voiceTool(policyRef.current, "assess_sentiment", { text });
       data = JSON.parse(res.output || "{}");
     } catch { return; }
+    const mood = (data.sentiment || "calm").toLowerCase();
+    const notable = mood !== "calm" && mood !== "neutral";
+    if (!notable) return;   // calm → don't show the Sentiment agent at all
     const d = res.display;
     if (d) {
       pushFire({ agent: "SEN", name: "Sentiment & Tone", answer: d.detail, confidence: d.score,
                  metric: d.metric, sources: d.sources || [], ctx: text });
       pushGov("SEN", d.gov);
     }
-    const mood = (data.sentiment || "calm").toLowerCase();
-    const notable = mood !== "calm" && mood !== "neutral";
     const tone = data.tone_guidance;
     const dc = dcRef.current;
-    if (notable && tone && dc && dc.readyState === "open") {
+    if (tone && dc && dc.readyState === "open") {
       dc.send(JSON.stringify({
         type: "conversation.item.create",
         item: { type: "message", role: "system",
