@@ -3,29 +3,55 @@ import { api } from "../api.js";
 import { Sources } from "../components/DocViewer.jsx";
 import Thumbs from "../components/Thumbs.jsx";
 
-// What to say, in order, to trigger each agent — shown on screen as a talk track.
+// One seamless claims call that flows naturally through every scenario. Say these
+// in order on LM-AUTO-88123 (Prakash Iyer); each line pulls the agent shown. The
+// `section` labels group the flow so it reads as a single, real conversation.
 const SCRIPT = [
-  { say: "Honestly I'm really frustrated — I've called three times and nobody has helped me!",
-    meta: "→ assess_sentiment (Sentiment) detects frustration → Voice AI pacifies, lets you vent" },
-  { say: "Hi, I was just in a car accident — I was rear-ended at a stoplight.",
-    meta: "Voice AI greets, starts intake" },
-  { say: "It happened yesterday at about 6 in the evening.",
-    meta: "Voice AI confirms the DATE & TIME of the accident" },
-  { say: "It was my car that's on the policy — the sedan.",
-    meta: "Voice AI confirms WHICH vehicle was involved (+ asks if a police report was filed)" },
-  { say: "The front bumper and hood are damaged, but no one's hurt and I can still drive it.",
-    meta: "→ create_claim (opens the claim with date + vehicle) + assess_severity (Triage)" },
-  { say: "Will my rental car be covered while it's in the shop?",
-    meta: "→ verify_policy_coverage (Policy Verification) → governance confirms grounded" },
-  { say: "What are my next steps?",
+  { section: "1 · Greeting & mood",
+    say: "Hi… honestly it's been a rough morning and now I'm dealing with this too.",
+    meta: "→ Sentiment reads the mood → Voice AI acknowledges it and stays calm" },
+
+  { section: "2 · Report the accident (FNOL)",
+    say: "I need to report an accident — I was in a pile-up on the highway this morning.",
+    meta: "Voice AI greets and starts intake" },
+  { say: "It happened today, around 8:15 in the morning.",
+    meta: "Voice AI confirms the DATE & TIME" },
+  { say: "It was the 2021 Honda Civic.",
+    meta: "Voice AI offers your vehicles (Civic or Camry) → you confirm WHICH one" },
+  { say: "Three cars were involved — the car behind rear-ended me into the one ahead. No injuries, but mine isn't drivable.",
+    meta: "→ create_claim (opens it) + assess_severity (Triage) + assess_fraud_risk (3 vehicles → SIU review)" },
+  { say: "Yes, the police came and filed a report.",
+    meta: "Voice AI notes the police report on the claim" },
+
+  { section: "3 · Coverage dispute",
+    say: "Last time someone told me my rental isn't covered — that can't be right, I pay enough!",
+    meta: "→ verify_policy_coverage (rental NOT on this policy) → Voice AI explains; if you push back it escalates to a human adjuster, never overrides" },
+
+  { section: "4 · Existing claim — status, repair, payment",
+    say: "While I have you — what's the status of my earlier claim, CLM-2041?",
+    meta: "→ check_claim_status (Claim Status)" },
+  { say: "And roughly how much will the repair cost, and where do I take it?",
+    meta: "→ get_repair_estimate (Repair Estimate) — estimate only, no payout approved" },
+  { say: "Also my reimbursement from that claim still hasn't shown up — it's been two weeks.",
+    meta: "→ check_payment_status (Payments)" },
+
+  { section: "5 · Guardrail",
+    say: "Can you just approve a $3,000 advance right now to tide me over?",
+    meta: "Voice AI declines and routes the money decision to a human adjuster" },
+
+  { section: "6 · Next steps & wrap-up",
+    say: "Okay, what should I do next?",
     meta: "→ recommend_next_action (Next Best Action) — walks 2 steps, then asks 'anything else?'" },
-  { say: "Do you have an article explaining how rental coverage works?",
-    meta: "→ search_knowledge (Knowledge Retrieval) pulls the FAQ" },
-  { say: "Can you just approve a $3,000 payout right now?",
-    meta: "Voice AI declines and routes to a human adjuster (guardrail)" },
-  { say: "No, that's all — I'm all set, thank you.",
-    meta: "Voice AI asks to end the call, then closes → Summarization agent writes the case summary" },
+  { say: "No, that's everything — thanks for your help.",
+    meta: "Voice AI asks to end, closes warmly → Summarization agent writes the case summary" },
 ];
+
+const LOW_CONF = 0.70;  // below this an answer is flagged for the Learning Studio
+function confColor(c) {
+  if (c < LOW_CONF) return "var(--red)";
+  if (c < 0.85) return "var(--amber)";
+  return "var(--green)";
+}
 
 // Live voice call with the claims Voice AI via OpenAI Realtime (WebRTC).
 // The agent calls REAL supporting agents (Policy Verification, Triage, Next Best
@@ -72,31 +98,31 @@ export default function LiveVoice({ onChange }) {
     setTranscript((t) => [...t, { who, text }]);
   }
 
-  async function runToolCall(name, call_id, argStr) {
-    let args = {};
-    try { args = argStr ? JSON.parse(argStr) : {}; } catch {}
-    let res;
-    try { res = await api.voiceTool(policyRef.current, name, args); }
-    catch { res = { output: JSON.stringify({ error: "tool failed" }), display: null }; }
-    if (res.display) {
-      setFires((x) => [...x, { ...res.display }]);
-      if (res.display.gov) setGov((x) => [...x, { agent: res.display.agent, ...res.display.gov }]);
-    }
-    const dc = dcRef.current;
-    if (dc && dc.readyState === "open") {
-      dc.send(JSON.stringify({
-        type: "conversation.item.create",
-        item: { type: "function_call_output", call_id, output: res.output },
-      }));
-      dc.send(JSON.stringify({ type: "response.create" }));
-    }
+  // Normalized agent-activity card: {agent, name, answer, confidence, metric, sources, ctx}.
+  function pushFire(a) { setFires((x) => [...x, a]); }
+  function pushGov(agent, g) { if (g) setGov((x) => [...x, { agent, ...g }]); }
+
+  // The per-turn ORCHESTRATOR. On every caller turn we ask the backend which agents
+  // belong to what was said, and fire that whole cluster (FNOL + Policy + Triage +
+  // Next Best Action for an accident, Coverage + Knowledge + Governance for a
+  // coverage question, etc.) — grounded in the caller's real policy, each with a
+  // confidence score + governance check. This is what makes the right agents light
+  // up live, instead of waiting on the model to call one tool.
+  async function runTurn(text) {
+    if (!text) return;
+    let r;
+    try { r = await api.voiceTurn(policyRef.current, text); }
+    catch { return; }
+    (r.activities || []).forEach((a) => {
+      pushFire({ agent: a.agent, name: a.name, answer: a.answer, confidence: a.confidence,
+                 metric: a.metric, sources: a.sources || [], ctx: text });
+      pushGov(a.agent, a.gov);
+    });
   }
 
   // Run the Sentiment agent once per caller turn (it reads the words). It ALWAYS
-  // shows in the agents panel (with the detected mood), so you can see it fire. But
-  // it only pushes a tone SOP to the Voice AI when the mood is notable (frustrated /
-  // in a hurry / confused) — on a calm turn it just notes "calm" and stays hands-off.
-  // The model no longer has this tool, so it can't double-fire.
+  // shows in the agents panel (with the detected mood). It only pushes a tone SOP to
+  // the Voice AI when the mood is notable (frustrated / in a hurry / confused).
   async function runSentiment(text) {
     if (!text) return;
     let res, data;
@@ -104,9 +130,11 @@ export default function LiveVoice({ onChange }) {
       res = await api.voiceTool(policyRef.current, "assess_sentiment", { text });
       data = JSON.parse(res.output || "{}");
     } catch { return; }
-    if (res.display) {
-      setFires((x) => [...x, { ...res.display }]);
-      if (res.display.gov) setGov((x) => [...x, { agent: "SEN", ...res.display.gov }]);
+    const d = res.display;
+    if (d) {
+      pushFire({ agent: "SEN", name: "Sentiment & Tone", answer: d.detail, confidence: d.score,
+                 metric: d.metric, sources: d.sources || [], ctx: text });
+      pushGov("SEN", d.gov);
     }
     const mood = (data.sentiment || "calm").toLowerCase();
     const notable = mood !== "calm" && mood !== "neutral";
@@ -137,9 +165,11 @@ export default function LiveVoice({ onChange }) {
     setSummarizing(true);
     try {
       const r = await api.summarize(policyRef.current, turns, firesRef.current || []);
-      if (r.display) {
-        setFires((x) => [...x, { ...r.display }]);
-        if (r.display.gov) setGov((x) => [...x, { agent: "SUM", ...r.display.gov }]);
+      const d = r.display;
+      if (d) {
+        pushFire({ agent: "SUM", name: "Summarization", answer: d.detail, confidence: d.score,
+                   metric: d.metric, sources: d.sources || [], ctx: "call" });
+        pushGov("SUM", d.gov);
       }
       setSummary(r.summary || "");
     } catch { setSummary("Could not generate the summary."); }
@@ -151,17 +181,10 @@ export default function LiveVoice({ onChange }) {
     try { ev = JSON.parse(raw); } catch { return; }
     switch (ev.type) {
       case "conversation.item.input_audio_transcription.completed":
-        addLine("you", ev.transcript); runSentiment(ev.transcript); break;
+        addLine("you", ev.transcript); runSentiment(ev.transcript); runTurn(ev.transcript); break;
       case "response.output_audio_transcript.done":
       case "response.audio_transcript.done":
         addLine("agent", ev.transcript); maybeAutoEnd(ev.transcript || ""); break;
-      case "response.done": {
-        const out = ev.response?.output || [];
-        out.filter((it) => it.type === "function_call").forEach((it) => {
-          runToolCall(it.name, it.call_id, it.arguments);
-        });
-        break;
-      }
       case "error":
         setError(ev.error?.message || "Realtime error"); break;
       default: break;
@@ -200,8 +223,11 @@ export default function LiveVoice({ onChange }) {
           session: {
             type: "realtime",
             instructions: tok.instructions,
-            tools: tok.tools || [],
-            tool_choice: "auto",
+            // The supporting agents are orchestrated per caller turn by the browser
+            // (runTurn → /api/voice/turn), so the model just holds the conversation —
+            // it doesn't call tools itself (that only fired one agent at a time).
+            tools: [],
+            tool_choice: "none",
             audio: {
               input: {
                 // Force English so the caller's speech is transcribed in English
@@ -328,16 +354,22 @@ export default function LiveVoice({ onChange }) {
               <div key={i} className="fire">
                 <div className="top">
                   <span className="chip agent">{f.agent}</span>
-                  <span className="chip">{f.metric}</span>
-                  <span className={"pass-badge " + (f.pass ? "ok" : "no")} style={{ marginLeft: "auto" }}>
-                    {f.pass ? "PASS" : "FAIL"} {Math.round((f.score || 0) * 100)}
+                  <span className="chip">{f.name || f.agent}</span>
+                  <span className="mono" style={{ marginLeft: "auto", color: confColor(f.confidence || 0) }}>
+                    conf {Math.round((f.confidence || 0) * 100)}%
                   </span>
                 </div>
-                <div className="detail">{f.detail}</div>
-                <div className="row" style={{ justifyContent: "space-between", marginTop: 4 }}>
-                  <Sources list={f.sources} />
-                  <Thumbs key={"af" + i} source="agent" agent={f.agent} agentName={f.agentName || f.agent}
-                    context={f.ctx || lastCustomer.current} answer={f.detail} onFlag={onChange} />
+                <div className="detail" style={{ color: "var(--text)" }}>{f.answer}</div>
+                <div className="row" style={{ justifyContent: "space-between", marginTop: 7, alignItems: "center" }}>
+                  <span style={{ display: "flex", alignItems: "center" }}>
+                    <span className="meter" style={{ width: 110 }}>
+                      <span style={{ width: Math.round((f.confidence || 0) * 100) + "%", background: confColor(f.confidence || 0) }} />
+                    </span>
+                    {(f.confidence || 0) < LOW_CONF && <span className="flag" style={{ marginLeft: 8 }}>low confidence</span>}
+                    <span style={{ marginLeft: 8 }}><Sources list={f.sources} /></span>
+                  </span>
+                  <Thumbs key={"af" + i} source="agent" agent={f.agent} agentName={f.name || f.agent}
+                    context={f.ctx || lastCustomer.current} answer={f.answer} confidence={f.confidence} onFlag={onChange} />
                 </div>
               </div>
             ))}
@@ -379,13 +411,22 @@ export default function LiveVoice({ onChange }) {
           <>
             <div style={{ marginTop: 10 }}>
               {SCRIPT.map((s, i) => (
-                <div key={i} className="script-step">
-                  <div className="script-n">{i + 1}</div>
-                  <div>
-                    <div className="script-say">"{s.say}"</div>
-                    <div className="script-meta">{s.meta}</div>
+                <React.Fragment key={i}>
+                  {s.section && (
+                    <div className="script-section" style={{
+                      fontSize: 12, fontWeight: 600, color: "var(--coral)",
+                      margin: i === 0 ? "0 0 8px" : "16px 0 8px", letterSpacing: ".02em" }}>
+                      {s.section}
+                    </div>
+                  )}
+                  <div className="script-step">
+                    <div className="script-n">{i + 1}</div>
+                    <div>
+                      <div className="script-say">"{s.say}"</div>
+                      <div className="script-meta">{s.meta}</div>
+                    </div>
                   </div>
-                </div>
+                </React.Fragment>
               ))}
             </div>
             <div className="muted" style={{ fontSize: 12, marginTop: 10 }}>

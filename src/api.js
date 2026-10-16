@@ -54,4 +54,6 @@ export const api = {
     j("/api/voice/tool", { method: "POST", body: JSON.stringify({ policy_id, name, arguments: args }) }),
   summarize: (policy_id, transcript, fires) =>
     j("/api/voice/summarize", { method: "POST", body: JSON.stringify({ policy_id, transcript, fires }) }),
+  voiceTurn: (policy_id, text) =>
+    j("/api/voice/turn", { method: "POST", body: JSON.stringify({ policy_id, text }) }),
 };

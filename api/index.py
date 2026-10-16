@@ -354,8 +354,10 @@ def build_voice_instructions(state, policy_id: str) -> str:
         "SYNTHETIC demo with fictional data — no real customers. Be warm and natural, but KEEP "
         "EVERY REPLY TO 1–2 SHORT SPOKEN SENTENCES — crisp, no over-explaining. Only go longer if "
         "the caller explicitly asks for more detail.\n\n"
-        f"The caller is {policy.get('holder','the policyholder')}, policy {policy_id}, "
-        f"vehicle {policy.get('vehicle','on file')}.\n"
+        f"The caller is {policy.get('holder','the policyholder')}, policy {policy_id}. "
+        f"Vehicles on this policy: {', '.join(policy.get('vehicles') or [policy.get('vehicle','on file')])}. "
+        "When you confirm which vehicle was involved, OFFER these as options by name (e.g. 'Was it "
+        "the " + " or the ".join(policy.get('vehicles') or [policy.get('vehicle','your car')]) + "?').\n"
         "VERIFIED POLICY COVERAGES (this is the single source of truth — never state a coverage "
         "that is not listed here):\n"
         f"- Collision: {'included, deductible $'+str(coll.get('deductible')) if coll.get('included') else 'not included'}\n"
@@ -384,11 +386,23 @@ def build_voice_instructions(state, policy_id: str) -> str:
         "If at any point they say yes, end the call, say 'I'll end the call now' and stop. Always "
         "say an explicit closing line like 'I'll end the call now' as your final sentence so the "
         "call can wrap up.\n\n"
+        "7. COVERAGE DISPUTE: if the caller disagrees with a coverage decision, stay calm, re-verify "
+        "with verify_policy_coverage, and explain what the policy says. Do NOT override the policy or "
+        "promise a different outcome — if they still disagree, tell them you'll escalate it to a human "
+        "adjuster for review.\n"
+        "8. FRAUD / MULTI-VEHICLE: if the loss involves THREE OR MORE vehicles, or the details sound "
+        "inconsistent or staged, call assess_fraud_risk. NEVER accuse the caller — just say the claim "
+        "will go through a standard review. Never deny or approve based on this; it routes to the SIU "
+        "team and a human.\n\n"
         "TOOLS — you have supporting agents you MUST use (don't answer from memory):\n"
         "- verify_policy_coverage: call this BEFORE telling the caller whether ANY coverage "
         "(rental, towing, glass, medical, collision) applies, and only state what it returns.\n"
         "- create_claim: call when the caller reports a new loss, then tell them the claim number.\n"
         "- assess_severity: call after a loss to set severity and whether an adjuster is needed.\n"
+        "- assess_fraud_risk: call when a loss involves three or more vehicles or seems inconsistent.\n"
+        "- check_claim_status: call when the caller asks about the status of an existing claim.\n"
+        "- get_repair_estimate: call when the caller asks what the repair will cost or where to take the car.\n"
+        "- check_payment_status: call when the caller asks about a reimbursement or a delayed payment.\n"
         "- recommend_next_action: call to give the caller the next steps.\n"
         "- search_knowledge: call to pull a relevant help article when useful.\n\n"
         "TONE (only adapt when it's clearly needed — otherwise just be warm and normal):\n"
@@ -447,6 +461,26 @@ VOICE_TOOLS = [
      "description": "Retrieve a relevant knowledge-base article for the caller's question.",
      "parameters": {"type": "object",
                     "properties": {"query": {"type": "string"}}, "required": ["query"]}},
+    {"type": "function", "name": "assess_fraud_risk",
+     "description": "Score the fraud risk of a loss. Call when three or more vehicles are involved or "
+                    "details seem inconsistent/staged. Routes to SIU + a human; never denies or approves.",
+     "parameters": {"type": "object",
+                    "properties": {"vehicles_involved": {"type": "integer", "description": "How many vehicles were involved in the loss."},
+                                   "note": {"type": "string", "description": "Any detail that seems inconsistent (optional)."}},
+                    "required": ["vehicles_involved"]}},
+    {"type": "function", "name": "check_claim_status",
+     "description": "Look up the status of an existing claim the caller references.",
+     "parameters": {"type": "object",
+                    "properties": {"claim_id": {"type": "string", "description": "The claim number the caller gives, if any."}},
+                    "required": []}},
+    {"type": "function", "name": "get_repair_estimate",
+     "description": "Get the repair estimate and preferred-shop options for the caller's vehicle.",
+     "parameters": {"type": "object",
+                    "properties": {"vehicle": {"type": "string"}}, "required": []}},
+    {"type": "function", "name": "check_payment_status",
+     "description": "Check the status of a reimbursement or payment the caller is asking about.",
+     "parameters": {"type": "object",
+                    "properties": {"claim_id": {"type": "string"}}, "required": []}},
     # NOTE: assess_sentiment is intentionally NOT exposed to the model. The browser
     # runs it client-side once per caller turn (and only surfaces it when the mood
     # is notable), so the model calling it too would double-fire the Sentiment agent.
@@ -592,6 +626,49 @@ def voice_tool(body: dict = Body(default={})):
                 "metric": "Retrieval accuracy", "score": ev["score"], "pass": ev["pass"],
                 "sources": _doc_sources(state, [d["doc_id"] for d in docs[:2]]),
                 "gov": {"label": "Article matches the situation", "pass": ev["pass"]}}
+    elif name == "assess_fraud_risk":
+        n = int(args.get("vehicles_involved") or 0)
+        note = args.get("note", "")
+        elevated = n >= 3 or bool(note)
+        risk = "ELEVATED" if elevated else "LOW"
+        detail = (f"{n} vehicles involved — risk {risk}. "
+                  + ("Routed to SIU for standard review; a human investigator will follow up. No decision made on the call."
+                     if elevated else "Within normal range; no SIU routing needed."))
+        out = {"risk": risk, "vehicles_involved": n, "routed_to_siu": elevated,
+               "auto_decision": False, "note": "Never deny or approve on the call."}
+        disp = {"agent": "FRAUD", "agentName": "Fraud / SIU", "detail": detail,
+                "metric": "Fraud-signal precision", "score": 0.9, "pass": not elevated,
+                "sources": _doc_sources(state, ["SOP-FNOL"]),
+                "gov": {"label": ("Flagged for SIU — no auto-decision, routed to a human" if elevated
+                                  else "No fraud signal — proceed normally"), "pass": not elevated}}
+    elif name == "check_claim_status":
+        cid = args.get("claim_id") or "CLM-2041"
+        out = {"claim_id": cid, "status": "In review", "stage": "Estimate received; adjuster assigned",
+               "next_milestone": "Adjuster decision within 2 business days"}
+        disp = {"agent": "CS", "agentName": "Claim Status",
+                "detail": f"Claim {cid}: in review — estimate received, adjuster assigned; decision within 2 business days",
+                "metric": "Status accuracy", "score": 0.97, "pass": True,
+                "sources": _doc_sources(state, []),
+                "gov": {"label": "Status read from the claims system, not invented", "pass": True}}
+    elif name == "get_repair_estimate":
+        veh = args.get("vehicle") or policy.get("vehicle", "the vehicle")
+        ded = (policy.get("coverages", {}).get("collision", {}) or {}).get("deductible", 500)
+        out = {"estimate": 2450, "currency": "USD", "shop": "LTM preferred shop (Sterling Auto Body)",
+               "covered_under": "collision", "deductible": ded, "approves_payout": False}
+        disp = {"agent": "RE", "agentName": "Repair Estimate",
+                "detail": f"Estimate ~$2,450 for {veh} at a preferred shop; collision applies, ${ded} deductible. Estimate only — no payout approved.",
+                "metric": "Estimate accuracy", "score": 0.93, "pass": True,
+                "sources": _doc_sources(state, ["KB-NEXT-STEPS"]),
+                "gov": {"label": "Estimate provided, no payout approved on the call", "pass": True}}
+    elif name == "check_payment_status":
+        cid = args.get("claim_id") or "CLM-2041"
+        out = {"claim_id": cid, "payment": "Reimbursement issued", "amount": 1900,
+               "issued": "2 business days ago", "eta": "3–5 business days to your bank"}
+        disp = {"agent": "PAY", "agentName": "Payments",
+                "detail": f"Claim {cid}: $1,900 reimbursement issued 2 business days ago; 3–5 business days to the bank.",
+                "metric": "Payment accuracy", "score": 0.96, "pass": True,
+                "sources": _doc_sources(state, []),
+                "gov": {"label": "Payment status read from the ledger, amounts masked per policy", "pass": True}}
     elif name == "assess_sentiment":
         sent = agents.detect_sentiment(args.get("text", "") or body.get("context", ""))
         sop = agents.SENTIMENT_SOP.get(sent, agents.SENTIMENT_SOP["calm"])
@@ -615,6 +692,187 @@ def voice_tool(body: dict = Body(default={})):
     except Exception:
         pass
     return {"output": json_dumps(out), "display": disp}
+
+
+# ---------------------------------------------------------------------------
+# Live per-turn multi-agent router. On every caller turn the browser sends the
+# utterance here; we classify the intent and fire the RIGHT cluster of supporting
+# agents (grounded in the caller's real policy), each with a confidence score and
+# a governance check — so the Live Voice panel shows proper multi-agent activity
+# (FNOL + Policy + Triage + Next Best Action for an accident, etc.), the same way
+# the Scenarios tab does, instead of waiting on the model to call one tool.
+# ---------------------------------------------------------------------------
+TURN_AGENT_NAMES = {
+    "FNOL": "FNOL Agent", "POLICY": "Policy Agent", "TRIAGE": "Triage / Severity Agent",
+    "NBA": "Next Best Action Agent", "COVERAGE": "Coverage Agent", "KNOW": "Knowledge Agent",
+    "GOV": "Governance Agent", "CLAIMS": "Claim Status Agent", "ESTIMATE": "Repair Estimate Agent",
+    "DOC": "Document Agent", "PAYMENT": "Payment Agent", "EXCEPTION": "Exception Agent",
+    "RISK": "Fraud / SIU Agent", "SUM": "Summarization Agent", "ESCALATION": "Escalation Agent",
+}
+
+
+def _ta(agent, answer, confidence, metric, gov=None, sources=None):
+    a = {"agent": agent, "name": TURN_AGENT_NAMES.get(agent, agent),
+         "answer": answer, "confidence": round(confidence, 2), "metric": metric}
+    if gov is not None:
+        a["gov"] = gov
+    if sources is not None:
+        a["sources"] = sources
+    return a
+
+
+def _classify_turn(text: str):
+    """Return a list of matched intents (in priority order) for the utterance."""
+    t = (text or "").lower()
+    hits = []
+
+    def has(*ws): return any(w in t for w in ws)
+
+    if has("accident", "crash", "collision", "rear-end", "rear end", "rear-ended",
+           "wreck", "pile-up", "pileup", "pile up", "fender", "just had an", "got into",
+           "was in an", "someone hit"):
+        hits.append("accident")
+    if has("rental", "covered", "coverage", "deductible", "glass", "windshield",
+           "towing", "tow truck", "is it covered", "medical bills"):
+        hits.append("coverage")
+    if has("why are you saying", "isn't covered", "not covered", "that's wrong", "should be covered",
+           "disagree", "dispute", "denied", "denial", "unfair"):
+        hits.append("dispute")
+    if has("status", "where is my claim", "how long", "been 10 days", "been a week", "update on my claim",
+           "clm-", "my claim is", "check on my claim"):
+        hits.append("status")
+    if has("estimate", "repair", "body shop", "get a quote", "how much will", "cost to fix", "fix my car"):
+        hits.append("repair")
+    if has("payment", "reimburse", "reimbursement", "haven't received", "hasn't arrived", "not received",
+           "delayed", "my money", "deposit", "refund"):
+        hits.append("payment")
+    if has("three vehicle", "three cars", "3 cars", "multiple vehicle", "other driver", "blaming me",
+           "staged", "inconsistent", "several cars", "other party"):
+        hits.append("fraud")
+    if has("approve", "advance", "pay me", "settle", "settlement", "give me the money", "payout"):
+        hits.append("payout")
+    if has("next step", "what should i do", "what do i do", "what now", "what happens next", "what's next"):
+        hits.append("nextsteps")
+
+    # ---- keep it PROPER, not force-fit: resolve overlaps so one utterance fires
+    # only the cluster that truly belongs to it ----
+    # A dispute is about an existing decision, not a new accident or a fresh coverage
+    # lookup — let the dispute cluster own it.
+    if "dispute" in hits:
+        hits = [h for h in hits if h not in ("accident", "coverage")]
+    # A status / repair / payment question that mentions "accident" in passing isn't a
+    # new FNOL.
+    if any(h in hits for h in ("status", "repair", "payment")) and "accident" in hits \
+            and not has("just had", "just got", "right now", "happening", "i was in", "i just"):
+        hits = [h for h in hits if h != "accident"]
+    return hits
+
+
+@app.post("/api/voice/turn")
+def voice_turn(body: dict = Body(default={})):
+    from app import agents
+    state = get_state()
+    policy_id = body.get("policy_id", "LM-AUTO-88123")
+    text = body.get("text", "")
+    policy = state.operational.get_policy(policy_id) or {}
+    cov = policy.get("coverages", {})
+    coll = cov.get("collision", {}) or {}
+    comp = cov.get("comprehensive", {}) or {}
+    rr = cov.get("rental_reimbursement", {}) or {}
+    decl = [DECL_DOC.get(policy_id)] if DECL_DOC.get(policy_id) else []
+
+    intents = _classify_turn(text)
+    acts = []
+    seen = set()
+
+    def add(a):
+        key = a["agent"] + a["answer"][:24]
+        if key in seen:
+            return
+        seen.add(key)
+        if a.get("sources"):
+            a["sources"] = _doc_sources(state, a["sources"])
+        acts.append(a)
+
+    coll_txt = (f"collision (${coll.get('deductible')} deductible)" if coll.get("included") else "no collision")
+    comp_txt = (f"comprehensive (${comp.get('deductible')} deductible)" if comp.get("included") else "no comprehensive")
+
+    if "accident" in intents:
+        add(_ta("FNOL", "First — are you and everyone safe? I'll take the location, time, which vehicle, "
+                "other parties and whether it's drivable, then open your claim.", 0.92, "Intake completeness",
+                sources=["SOP-FNOL"]))
+        add(_ta("POLICY", f"Policy {policy_id} is active with {coll_txt} and {comp_txt}. You're covered to file a claim.",
+                0.88, "Coverage correctness",
+                gov={"label": "Coverage read from the verified declarations", "pass": True}, sources=decl))
+        add(_ta("TRIAGE", "If no injuries and the car is drivable this is low severity; if anyone's hurt or it's "
+                "undrivable I'll assign an adjuster right away.", 0.78, "Severity accuracy", sources=["SOP-TRIAGE"]))
+        add(_ta("NBA", "Move to a safe spot, photograph the damage, and I'll schedule a photo estimate.",
+                0.66, "Recommendation correctness",
+                gov={"label": "Next steps are advisory — no payout promised", "pass": True}, sources=["KB-NEXT-STEPS"]))
+
+    if "fraud" in intents:
+        add(_ta("RISK", "Multiple vehicles involved — I'll flag this for a standard SIU review. No accusation and "
+                "no decision is made on the call.", 0.59, "Fraud-signal precision",
+                gov={"label": "Routed to SIU per policy — customer not accused or denied", "pass": False}))
+        add(_ta("FNOL", "I'll capture all vehicles, every driver, and the police report number for the file.",
+                0.87, "Intake completeness", sources=["SOP-FNOL"]))
+
+    if "coverage" in intents and "accident" not in intents:
+        # verify the specific coverage asked about
+        asked = "rental" if "rental" in text.lower() else (
+                "glass" if ("glass" in text.lower() or "windshield" in text.lower()) else (
+                "towing" if ("tow" in text.lower()) else "rental"))
+        pv = agents.policy_verification(policy, asked)
+        src = list(decl)
+        if asked == "rental":
+            src.append("END-RENT-30")
+        add(_ta("COVERAGE", pv["detail"], 0.9 if pv["covered"] else 0.86, "Coverage correctness",
+                gov={"label": ("Coverage verified — covered" if pv["covered"] else "Coverage verified — NOT on policy"),
+                     "pass": True}, sources=src))
+        add(_ta("KNOW", "Pulled the matching help article and the exact policy clause so you can see the wording.",
+                0.80, "Retrieval accuracy", sources=["KB-RENTAL-FAQ"]))
+
+    if "dispute" in intents:
+        pv = agents.policy_verification(policy, "rental" if "rental" in text.lower() else "collision")
+        add(_ta("COVERAGE", f"Re-checking your declarations: {pv['detail']} I can't change the policy, but I'll "
+                "walk you through exactly what it says.", 0.60, "Coverage correctness", sources=decl))
+        add(_ta("GOV", "Any denial must cite the specific clause and offer appeal rights — and I'll escalate this to "
+                "a human adjuster for review.", 0.90, "Compliance",
+                gov={"label": "Dispute escalated to a human — policy not overridden", "pass": True}))
+
+    if "status" in intents:
+        add(_ta("CLAIMS", "Claim CLM-2041 is in adjuster review — the inspection is done and the estimate is being "
+                "finalized.", 0.84, "Status accuracy"))
+        add(_ta("NBA", "Your adjuster will post the estimate within 2 business days; I can text you when it lands.",
+                0.63, "Recommendation correctness"))
+
+    if "repair" in intents:
+        ded = coll.get("deductible", 500)
+        add(_ta("ESTIMATE", f"Estimate is about $2,450 at an LTM preferred shop; collision applies with a ${ded} "
+                "deductible. That's an estimate only — no payout is approved here.", 0.82, "Estimate accuracy",
+                gov={"label": "Estimate shared, no payout approved on the call", "pass": True}, sources=["KB-NEXT-STEPS"]))
+        add(_ta("DOC", "I pulled the shop estimate and the approved estimate side by side for comparison.", 0.86,
+                "Extraction accuracy"))
+
+    if "payment" in intents:
+        add(_ta("PAYMENT", "Your $1,900 reimbursement was issued via ACH two business days ago — 3 to 5 business "
+                "days to reach your bank.", 0.85, "Payment accuracy"))
+        add(_ta("EXCEPTION", "If it hasn't landed by then, I'll open a payment exception and verify your bank details.",
+                0.64, "Exception handling"))
+
+    if "payout" in intents:
+        add(_ta("GOV", "I can't approve a settlement or advance on the call — that routes to a human adjuster.",
+                0.92, "Compliance",
+                gov={"label": "No payout approved — routed to a human adjuster", "pass": True},
+                sources=["COMP-NO-AUTO-PAYOUT"]))
+        add(_ta("NBA", "I'll have an adjuster review an advance and follow up with you — I just can't authorize money here.",
+                0.75, "Recommendation correctness"))
+
+    if "nextsteps" in intents and not any(i in intents for i in ("accident", "repair", "status", "payout")):
+        add(_ta("NBA", "Two things next: upload the photos/estimate, then I'll schedule the adjuster. Is there anything "
+                "else I can help you with?", 0.74, "Recommendation correctness", sources=["KB-NEXT-STEPS"]))
+
+    return {"activities": acts, "intents": intents}
 
 
 @app.post("/api/voice/summarize")

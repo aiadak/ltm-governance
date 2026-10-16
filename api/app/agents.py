@@ -35,6 +35,18 @@ AGENTS: List[dict] = [
     {"id": "SEN", "name": "Sentiment & Tone", "owner": "Contact Center AI",
      "risk": "Medium", "metric": "Tone appropriateness", "role": "SEN",
      "tools": ["Sentiment detection", "Tone SOP"]},
+    {"id": "CS",  "name": "Claim Status", "owner": "Claims Ops",
+     "risk": "Low", "metric": "Status accuracy", "role": "CS",
+     "tools": ["Claims system lookup", "Milestone tracker"]},
+    {"id": "RE",  "name": "Repair Estimate", "owner": "Claims Ops",
+     "risk": "Medium", "metric": "Estimate accuracy", "role": "RE",
+     "tools": ["Estimate engine", "Preferred-shop network"]},
+    {"id": "PAY", "name": "Payments", "owner": "Finance Ops",
+     "risk": "Medium", "metric": "Payment accuracy", "role": "PAY",
+     "tools": ["Disbursement ledger", "ACH status"]},
+    {"id": "FRAUD", "name": "Fraud / SIU", "owner": "Special Investigations",
+     "risk": "High", "metric": "Fraud-signal precision", "role": "FRAUD",
+     "tools": ["Risk scoring", "SIU routing"]},
 ]
 A = {a["id"]: a for a in AGENTS}
 
