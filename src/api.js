@@ -33,6 +33,7 @@ export const api = {
   runCall: (policy_id, brain = "") =>
     j("/api/call/run", { method: "POST", body: JSON.stringify({ policy_id, brain }) }),
   dashboard: () => j("/api/dashboard"),
+  metrics: () => j("/api/metrics"),
   traces: (convId) => j(`/api/traces/${convId}`),
   learning: () => j("/api/learning"),
   review: (id, action, addendum = "") =>
