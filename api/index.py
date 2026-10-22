@@ -804,28 +804,37 @@ def _classify_turn(text: str):
 
     if has("accident", "crash", "collision", "rear-end", "rear end", "rear-ended",
            "wreck", "pile-up", "pileup", "pile up", "fender", "just had an", "got into",
-           "was in an", "someone hit"):
+           "was in an", "someone hit", "hit me", "hit my", "bumped", "smashed", "banged",
+           "met with", "had an incident", "my car got", "report a claim", "file a claim",
+           "start a claim", "ran into"):
         hits.append("accident")
     if has("rental", "covered", "coverage", "deductible", "glass", "windshield",
-           "towing", "tow truck", "is it covered", "medical bills"):
+           "towing", "tow truck", "tow", "is it covered", "am i covered", "do i have",
+           "medical", "windscreen", "will you cover", "will it cover", "under my policy"):
         hits.append("coverage")
     if has("why are you saying", "isn't covered", "not covered", "that's wrong", "should be covered",
-           "disagree", "dispute", "denied", "denial", "unfair"):
+           "disagree", "dispute", "denied", "denial", "unfair", "that is wrong", "you rejected",
+           "i don't agree", "this is not right"):
         hits.append("dispute")
     if has("status", "where is my claim", "how long", "been 10 days", "been a week", "update on my claim",
-           "clm-", "my claim is", "check on my claim"):
+           "clm-", "my claim is", "check on my claim", "what's happening with", "any update",
+           "how is my claim", "track my claim", "progress on"):
         hits.append("status")
-    if has("estimate", "repair", "body shop", "get a quote", "how much will", "cost to fix", "fix my car"):
+    if has("estimate", "repair", "body shop", "get a quote", "quote", "how much will", "cost to fix",
+           "fix my car", "how much to", "what will it cost", "where do i take", "which shop"):
         hits.append("repair")
     if has("payment", "reimburse", "reimbursement", "haven't received", "hasn't arrived", "not received",
-           "delayed", "my money", "deposit", "refund"):
+           "delayed", "my money", "deposit", "refund", "not been paid", "where's my payment",
+           "still waiting for", "didn't get paid", "cheque", "check hasn't"):
         hits.append("payment")
     if has("three vehicle", "three cars", "3 cars", "multiple vehicle", "other driver", "blaming me",
-           "staged", "inconsistent", "several cars", "other party"):
+           "staged", "inconsistent", "several cars", "other party", "four cars", "two other"):
         hits.append("fraud")
-    if has("approve", "advance", "pay me", "settle", "settlement", "give me the money", "payout"):
+    if has("approve", "advance", "pay me", "settle", "settlement", "give me the money", "payout",
+           "pay out", "cut me a check", "release the funds"):
         hits.append("payout")
-    if has("next step", "what should i do", "what do i do", "what now", "what happens next", "what's next"):
+    if has("next step", "what should i do", "what do i do", "what now", "what happens next", "what's next",
+           "what do i need to do", "how do i proceed", "what's the process"):
         hits.append("nextsteps")
 
     # ---- keep it PROPER, not force-fit: resolve overlaps so one utterance fires
@@ -900,13 +909,17 @@ def voice_turn(body: dict = Body(default={})):
     rr = cov.get("rental_reimbursement", {}) or {}
     decl = [DECL_DOC.get(policy_id)] if DECL_DOC.get(policy_id) else []
 
-    # Intelligent routing: let the LLM pick the relevant agents; fall back to the
-    # keyword classifier when there's no brain available.
-    intents = _llm_intents(text)
-    route = "llm"
+    # Routing is keyword-based so the turn returns INSTANTLY — the agents must pop up
+    # live as the caller speaks, so we never put a slow LLM call on this hot path.
+    # (Optional LLM refinement can be requested with body {"smart": true}; off by
+    # default to keep firing real-time.)
+    intents = None
+    route = "keyword"
+    if body.get("smart"):
+        intents = _llm_intents(text)
+        route = "llm" if intents is not None else "keyword"
     if intents is None:
         intents = _classify_turn(text)
-        route = "keyword"
     acts = []
     seen = set()
 

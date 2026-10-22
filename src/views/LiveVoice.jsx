@@ -99,33 +99,36 @@ export default function LiveVoice({ onChange }) {
   }
 
   // Normalized agent-activity card: {agent, name, answer, confidence, metric, sources, ctx}.
-  function pushFire(a) { setFires((x) => [...x, a]); }
+  function pushFire(a) { setFires((x) => [...x, { ...a, fresh: true }]); }
   function pushGov(agent, g) { if (g) setGov((x) => [...x, { agent, ...g }]); }
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-  // The per-turn ORCHESTRATOR. On every caller turn we ask the backend which agents
-  // belong to what was said, and fire that whole cluster (FNOL + Policy + Triage +
-  // Next Best Action for an accident, Coverage + Knowledge + Governance for a
-  // coverage question, etc.) — grounded in the caller's real policy, each with a
-  // confidence score + governance check. This is what makes the right agents light
-  // up live, instead of waiting on the model to call one tool.
-  async function runTurn(text) {
+  // ORCHESTRATOR for one caller turn, in real time and in order:
+  //   1) Sentiment does a quick mood check FIRST — it only shows when the mood has
+  //      actually spoiled (frustrated / rushed / confused); on a calm turn it's silent.
+  //   2) Then the question's agent cluster fires ONE AT A TIME (staggered), so you
+  //      see them pop up live as the Voice AI consults them — not all at once later.
+  async function handleCallerTurn(text) {
     if (!text) return;
+    await runSentiment(text);          // mood agent first (if notable)
+    await runTurn(text);               // then the question cluster, staggered
+  }
+
+  async function runTurn(text) {
     let r;
     try { r = await api.voiceTurn(policyRef.current, text); }
     catch { return; }
-    (r.activities || []).forEach((a) => {
+    const acts = r.activities || [];
+    for (let i = 0; i < acts.length; i++) {
+      const a = acts[i];
       pushFire({ agent: a.agent, name: a.name, answer: a.answer, confidence: a.confidence,
                  metric: a.metric, sources: a.sources || [], ctx: text });
       pushGov(a.agent, a.gov);
-    });
+      if (i < acts.length - 1) await sleep(500);   // live, one-by-one
+    }
   }
 
-  // Sentiment does a quiet mood check every caller turn, but ONLY surfaces (fires in
-  // the panel + nudges the Voice AI's tone) when the mood actually spoils — frustrated,
-  // rushed or confused. While the caller is calm it stays silent, so a normal call
-  // isn't cluttered with a "mood: calm" line every turn.
   async function runSentiment(text) {
-    if (!text) return;
     let res, data;
     try {
       res = await api.voiceTool(policyRef.current, "assess_sentiment", { text });
@@ -149,6 +152,7 @@ export default function LiveVoice({ onChange }) {
                 content: [{ type: "input_text", text: "[tone guidance] " + tone }] },
       }));
     }
+    await sleep(350);   // let the mood card land before the question cluster
   }
 
   // The Voice AI announced it's ending — give it a moment to finish speaking, then
@@ -183,7 +187,7 @@ export default function LiveVoice({ onChange }) {
     try { ev = JSON.parse(raw); } catch { return; }
     switch (ev.type) {
       case "conversation.item.input_audio_transcription.completed":
-        addLine("you", ev.transcript); runSentiment(ev.transcript); runTurn(ev.transcript); break;
+        addLine("you", ev.transcript); handleCallerTurn(ev.transcript); break;
       case "response.output_audio_transcript.done":
       case "response.audio_transcript.done":
         addLine("agent", ev.transcript); maybeAutoEnd(ev.transcript || ""); break;
@@ -353,7 +357,7 @@ export default function LiveVoice({ onChange }) {
           <div className="col-body" style={{ minHeight: 320 }}>
             {fires.length === 0 && <div className="empty">Agents fire here as the Voice AI consults them.</div>}
             {fires.map((f, i) => (
-              <div key={i} className="fire">
+              <div key={i} className={"fire" + (f.fresh ? " fire-in" : "")}>
                 <div className="top">
                   <span className="chip agent">{f.agent}</span>
                   <span className="chip">{f.name || f.agent}</span>
