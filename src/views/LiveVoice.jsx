@@ -9,41 +9,45 @@ import Thumbs from "../components/Thumbs.jsx";
 const SCRIPT = [
   { section: "1 · Greeting & mood",
     say: "Hi… honestly it's been a rough morning and now I'm dealing with this too.",
-    meta: "→ Sentiment reads the mood → Voice AI acknowledges it and stays calm" },
+    meta: "The Voice AI has already greeted you by name (\"Hi Prakash…\"). Sentiment reads the mood first → it acknowledges and stays calm. Policy is pulled up in the background." },
 
   { section: "2 · Report the accident (FNOL)",
     say: "I need to report an accident — I was in a pile-up on the highway this morning.",
-    meta: "Voice AI greets and starts intake" },
-  { say: "It happened today, around 8:15 in the morning.",
-    meta: "Voice AI confirms the DATE & TIME" },
+    meta: "Voice AI: \"Let me pull that up…\" (filler) → asks first: is everyone okay? → FNOL agent starts intake" },
+  { say: "Everyone's fine, thankfully.",
+    meta: "Safety confirmed" },
   { say: "It was the 2021 Honda Civic.",
-    meta: "Voice AI offers your vehicles (Civic or Camry) → you confirm WHICH one" },
-  { say: "Three cars were involved — the car behind rear-ended me into the one ahead. No injuries, but mine isn't drivable.",
-    meta: "→ create_claim (opens it) + assess_severity (Triage) + assess_fraud_risk (3 vehicles → SIU review)" },
+    meta: "Voice AI offered your two cars (Civic or Camry) → you confirm WHICH one" },
+  { say: "Today, around 8:15 this morning, on the I-93 near exit 12.",
+    meta: "Voice AI confirms the DATE, TIME and WHERE" },
+  { say: "Three cars were involved — the car behind rear-ended me into the one ahead. Mine isn't drivable.",
+    meta: "→ Triage (not drivable) + Fraud/SIU (3 vehicles → standard review, no accusation). Voice AI opens the claim and gives a CLM- reference." },
+  { say: "Yes please, can you arrange the tow?",
+    meta: "Roadside assistance IS on the policy → Voice AI arranges a tow to the preferred shop (grounded coverage use)" },
   { say: "Yes, the police came and filed a report.",
     meta: "Voice AI notes the police report on the claim" },
 
-  { section: "3 · Coverage dispute",
-    say: "Last time someone told me my rental isn't covered — that can't be right, I pay enough!",
-    meta: "→ verify_policy_coverage (rental NOT on this policy) → Voice AI explains; if you push back it escalates to a human adjuster, never overrides" },
+  { section: "3 · Coverage question → dispute",
+    say: "Will I get a rental while it's in the shop? Last time someone said it's not covered — that can't be right.",
+    meta: "→ Coverage agent re-checks (rental NOT on this policy) + Governance (any denial must cite the clause). Voice AI explains plainly, offers the out-of-pocket / preferred-vendor option, and escalates to a human adjuster if you push back — never overrides." },
 
   { section: "4 · Existing claim — status, repair, payment",
     say: "While I have you — what's the status of my earlier claim, CLM-2041?",
-    meta: "→ check_claim_status (Claim Status)" },
-  { say: "And roughly how much will the repair cost, and where do I take it?",
-    meta: "→ get_repair_estimate (Repair Estimate) — estimate only, no payout approved" },
+    meta: "→ Claim Status agent (in adjuster review, decision due in 2 business days)" },
+  { say: "And roughly what will the repair on the Civic cost, and where do I take it?",
+    meta: "→ Repair Estimate + Document agents — ballpark only until inspected, preferred shop Sterling Auto Body, no payout approved" },
   { say: "Also my reimbursement from that claim still hasn't shown up — it's been two weeks.",
-    meta: "→ check_payment_status (Payments)" },
+    meta: "→ Payments + Exception agents ($1,900 issued 2 business days ago; 3–5 days to land)" },
 
   { section: "5 · Guardrail",
     say: "Can you just approve a $3,000 advance right now to tide me over?",
-    meta: "Voice AI declines and routes the money decision to a human adjuster" },
+    meta: "→ Governance agent — Voice AI declines and routes the money decision to a human adjuster" },
 
   { section: "6 · Next steps & wrap-up",
     say: "Okay, what should I do next?",
-    meta: "→ recommend_next_action (Next Best Action) — walks 2 steps, then asks 'anything else?'" },
+    meta: "→ Next Best Action — walks two steps, then asks \"anything else I can help with?\"" },
   { say: "No, that's everything — thanks for your help.",
-    meta: "Voice AI asks to end, closes warmly → Summarization agent writes the case summary" },
+    meta: "Voice AI asks \"Shall I end the call?\" → closes warmly → Summarization agent writes the case summary" },
 ];
 
 const LOW_CONF = 0.70;  // below this an answer is flagged for the Learning Studio
@@ -84,6 +88,14 @@ export default function LiveVoice({ onChange }) {
   const callerTurns = useRef(0);   // counts caller turns so the first one opens the flow
   const firedKeys = useRef(new Set());  // agent+answer already shown this call → no repeats
   const lastMood = useRef("");          // sentiment fires on a mood CHANGE, not every turn
+  // cockpit panes auto-scroll to the newest entry, so nothing needs manual scrolling
+  const chatPane = useRef(null);
+  const agentPane = useRef(null);
+  const govPane = useRef(null);
+  const toBottom = (r) => { if (r.current) r.current.scrollTo({ top: r.current.scrollHeight, behavior: "smooth" }); };
+  useEffect(() => toBottom(chatPane), [transcript]);
+  useEffect(() => toBottom(agentPane), [fires]);
+  useEffect(() => toBottom(govPane), [gov]);
   useEffect(() => { transcriptRef.current = transcript; }, [transcript]);
   useEffect(() => { firesRef.current = fires; }, [fires]);
   useEffect(() => { statusRef.current = status; }, [status]);
@@ -314,11 +326,10 @@ export default function LiveVoice({ onChange }) {
 
   return (
     <div>
-      <div className="view-head">
-        <h1>Live Voice — talk to the governed Voice AI</h1>
-        <p>A real spoken call (OpenAI Realtime). As you talk, the Voice AI calls the real supporting
-          agents — Policy Verification, Triage, Next Best Action, Knowledge — and governance checks each
-          one <b>live</b>. Pick the policy, press Start, allow your mic, and just talk.</p>
+      <div className="view-head" style={{ marginBottom: 12 }}>
+        <h1>Agent Cockpit — live call</h1>
+        <p>Talk to the governed Voice AI. The conversation runs on the left; the supporting agents and
+          governance checks fire on the right, live, as the call reaches each step.</p>
       </div>
 
       {available === false && (
@@ -352,32 +363,43 @@ export default function LiveVoice({ onChange }) {
         <div className="banner" style={{ marginBottom: 16, borderColor: "var(--red)", color: "var(--text)" }}>{error}</div>
       )}
 
-      <div className="ops">
-        <div className="card">
-          <div className="col-head"><h3>🎧 You ↔ Voice AI</h3><span className="tag">{policy}</span></div>
-          <div className="col-body" style={{ minHeight: 320 }}>
+      <div className="cockpit">
+        {/* ---------- chat window ---------- */}
+        <div className="card chatwin">
+          <div className="col-head">
+            <span className={"live-dot" + (live ? " on" : "")} />
+            <h3>Conversation</h3>
+            <span className="tag">{policy}</span>
+          </div>
+          <div className="col-body chat-body" ref={chatPane}>
             {transcript.length === 0 && (
               <div className="empty">{live ? "Listening… say hello, or ask about your claim." : "Press Start and begin talking."}</div>
             )}
             {transcript.map((m, i) => (
-              <div key={i} className={"bubble " + (m.who === "you" ? "customer" : "va")}>
-                <div className="who" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <span>{m.who === "you" ? "You" : "Voice AI"}</span>
-                  {m.who !== "you" && (
-                    <Thumbs key={"vb" + i + (m.text || "").length} source="voice" agent="VA" agentName="Voice AI"
-                      context={lastCustomer.current} answer={m.text} onFlag={onChange} />
-                  )}
+              <div key={i} className={"msg " + (m.who === "you" ? "me" : "ai")}>
+                <div className="avatar">{m.who === "you" ? "P" : "AI"}</div>
+                <div className={"bubble " + (m.who === "you" ? "customer" : "va")}>
+                  <div className="who" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+                    <span>{m.who === "you" ? "Caller" : "Voice AI"}</span>
+                    {m.who !== "you" && (
+                      <Thumbs key={"vb" + i + (m.text || "").length} source="voice" agent="VA" agentName="Voice AI"
+                        context={lastCustomer.current} answer={m.text} onFlag={onChange} />
+                    )}
+                  </div>
+                  {m.text}
                 </div>
-                {m.text}
               </div>
             ))}
+            {live && <div className="listening"><span /><span /><span /> listening</div>}
           </div>
         </div>
 
-        <div className="card">
-          <div className="col-head"><h3>⚙ Supporting agents</h3><span className="tag">live</span></div>
-          <div className="col-body" style={{ minHeight: 320 }}>
-            {fires.length === 0 && <div className="empty">Agents fire here as the Voice AI consults them.</div>}
+        {/* ---------- agent cockpit (right rail) ---------- */}
+        <div className="rail">
+        <div className="card agentwin">
+          <div className="col-head"><h3>⚙ Agents firing</h3><span className="tag">{fires.length} fired</span></div>
+          <div className="col-body" ref={agentPane}>
+            {fires.length === 0 && <div className="empty">Agents appear here live, as the call reaches each step.</div>}
             {fires.map((f, i) => (
               <div key={i} className={"fire" + (f.fresh ? " fire-in" : "")}>
                 <div className="top">
@@ -404,10 +426,10 @@ export default function LiveVoice({ onChange }) {
           </div>
         </div>
 
-        <div className="card">
-          <div className="col-head"><h3>🛡 Governance</h3><span className="tag">live</span></div>
-          <div className="col-body" style={{ minHeight: 320 }}>
-            {gov.length === 0 && <div className="empty">Live green checks / red flags appear here.</div>}
+        <div className="card govwin">
+          <div className="col-head"><h3>🛡 Governance</h3><span className="tag">{gov.length} checks</span></div>
+          <div className="col-body" ref={govPane}>
+            {gov.length === 0 && <div className="empty">Green checks / red flags appear here.</div>}
             {gov.map((g, i) => (
               <div key={i} className={"gov " + (g.pass ? "pass" : "fail")}>
                 <div className="icn">{g.pass ? "✓" : "✕"}</div>
@@ -416,6 +438,7 @@ export default function LiveVoice({ onChange }) {
             ))}
           </div>
         </div>
+        </div>{/* /rail */}
       </div>
 
       {(summarizing || summary) && (

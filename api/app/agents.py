@@ -76,8 +76,9 @@ def detect_sentiment(text: str) -> str:
                   "so many times", "irritated", "pathetic", "horrible", "furious",
                   "done with", "this is wrong", "nonsense", "wasting my time",
                   "rough morning", "rough day", "stressed", "stressful", "bad day", "terrible day"]
-    urgent = ["quick", "hurry", "asap", "right now", "immediately", "urgent", "emergency",
-              "fast", "no time", "in a rush", "running late", "make it quick", "hurry up"]
+    urgent = ["hurry", "asap", "immediately", "urgent", "emergency", "no time",
+              "in a rush", "running late", "make it quick", "hurry up", "be quick",
+              "i'm late", "need this fast"]
     confused = ["don't understand", "do not understand", "understand any", "confus",
                 "what do you mean", "not sure", "lost", "complicated", "makes no sense",
                 "i'm confused", "unclear", "can you explain", "doesn't make sense"]
@@ -107,6 +108,33 @@ def policy_verification(policy: dict, coverage: str) -> dict:
                     "source": "POL declarations + END-RENT-30"}
         return {"coverage": "rental", "covered": False,
                 "detail": "No rental reimbursement endorsement on this policy.",
+                "source": "POL declarations"}
+    if coverage == "towing":
+        rs = cov.get("roadside", {})
+        if rs.get("included"):
+            return {"coverage": "towing", "covered": True,
+                    "detail": "Roadside assistance is included — a tow to a preferred shop can be arranged.",
+                    "source": "POL declarations"}
+        return {"coverage": "towing", "covered": False,
+                "detail": "Roadside assistance is not on this policy — towing would be out of pocket.",
+                "source": "POL declarations"}
+    if coverage == "glass":
+        cp = cov.get("comprehensive", {})
+        if cp.get("included"):
+            return {"coverage": "glass", "covered": True,
+                    "detail": f"Glass falls under comprehensive — covered, subject to the ${cp.get('deductible')} deductible.",
+                    "source": "POL declarations + KB-GLASS"}
+        return {"coverage": "glass", "covered": False,
+                "detail": "No comprehensive coverage on this policy, so glass isn't covered.",
+                "source": "POL declarations"}
+    if coverage in ("collision", "comprehensive"):
+        c = cov.get(coverage, {})
+        if c.get("included"):
+            return {"coverage": coverage, "covered": True,
+                    "detail": f"{coverage.capitalize()} is included, with a ${c.get('deductible')} deductible.",
+                    "source": "POL declarations"}
+        return {"coverage": coverage, "covered": False,
+                "detail": f"{coverage.capitalize()} is not included on this policy.",
                 "source": "POL declarations"}
     return {"coverage": coverage, "covered": coverage in cov,
             "detail": f"{coverage} checked against declarations.",
