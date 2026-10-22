@@ -33,6 +33,7 @@ export const api = {
   runCall: (policy_id, brain = "") =>
     j("/api/call/run", { method: "POST", body: JSON.stringify({ policy_id, brain }) }),
   dashboard: () => j("/api/dashboard"),
+  metrics: () => j("/api/metrics"),
   traces: (convId) => j(`/api/traces/${convId}`),
   learning: () => j("/api/learning"),
   review: (id, action, addendum = "") =>
@@ -52,4 +53,8 @@ export const api = {
     j("/api/realtime/token", { method: "POST", body: JSON.stringify({ policy_id }) }),
   voiceTool: (policy_id, name, args) =>
     j("/api/voice/tool", { method: "POST", body: JSON.stringify({ policy_id, name, arguments: args }) }),
+  summarize: (policy_id, transcript, fires) =>
+    j("/api/voice/summarize", { method: "POST", body: JSON.stringify({ policy_id, transcript, fires }) }),
+  voiceTurn: (policy_id, text) =>
+    j("/api/voice/turn", { method: "POST", body: JSON.stringify({ policy_id, text }) }),
 };

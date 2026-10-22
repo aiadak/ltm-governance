@@ -59,26 +59,44 @@ def _openai(system: str, user: str, max_tokens: int) -> Optional[str]:
         return None
 
 
+def _record(system, user, out, source, t0):
+    """Record a real LLM call's latency + (estimated) tokens for the dashboard."""
+    try:
+        import time
+        from . import metrics
+        tin = (len(system) + len(user)) // 4      # ~4 chars/token estimate
+        tout = (len(out) // 4) if out else 0
+        metrics.record_llm((time.perf_counter() - t0) * 1000.0, tin, tout, source)
+    except Exception:
+        pass
+
+
 def complete(system: str, user: str, brain: str = "", max_tokens: int = 300,
              fallback: str = "") -> dict:
     """Return {text, source} where source is 'claude' | 'openai' | 'simulated'."""
+    import time
     brain = brain or llm_status()["default"]
+    t0 = time.perf_counter()
     if brain == "claude" and _ANTHROPIC_KEY:
         out = _anthropic(system, user, max_tokens)
         if out:
+            _record(system, user, out, "claude", t0)
             return {"text": out, "source": "claude"}
     if brain == "openai" and _OPENAI_KEY:
         out = _openai(system, user, max_tokens)
         if out:
+            _record(system, user, out, "openai", t0)
             return {"text": out, "source": "openai"}
     # try any available brain before simulating
     if _ANTHROPIC_KEY:
         out = _anthropic(system, user, max_tokens)
         if out:
+            _record(system, user, out, "claude", t0)
             return {"text": out, "source": "claude"}
     if _OPENAI_KEY:
         out = _openai(system, user, max_tokens)
         if out:
+            _record(system, user, out, "openai", t0)
             return {"text": out, "source": "openai"}
     return {"text": fallback, "source": "simulated"}
 

@@ -3,38 +3,55 @@ import { api } from "../api.js";
 import { Sources } from "../components/DocViewer.jsx";
 import Thumbs from "../components/Thumbs.jsx";
 
-// What to say, in order, to trigger each agent — shown on screen as a talk track.
+// One seamless claims call that flows naturally through every scenario. Say these
+// in order on LM-AUTO-88123 (Prakash Iyer); each line pulls the agent shown. The
+// `section` labels group the flow so it reads as a single, real conversation.
 const SCRIPT = [
-  { say: "Honestly I'm really frustrated — I've called three times and nobody has helped me!",
-    meta: "→ assess_sentiment (Sentiment) detects frustration → Voice AI pacifies, lets you vent" },
-  { say: "Hi, I was just in a car accident — I was rear-ended at a stoplight.",
-    meta: "Voice AI greets, starts intake" },
-  { say: "The front bumper and hood are damaged, but no one's hurt and I can still drive it.",
-    meta: "→ create_claim (opens a claim) + assess_severity (Triage)" },
-  { say: "Will my rental car be covered while it's in the shop?",
-    meta: "→ verify_policy_coverage (Policy Verification) → governance confirms grounded" },
-  { say: "What are my next steps?",
-    meta: "→ recommend_next_action (Next Best Action) — refuses any payout" },
-  { say: "Do you have an article explaining how rental coverage works?",
-    meta: "→ search_knowledge (Knowledge Retrieval) pulls the FAQ" },
-  { say: "Can you just approve a $3,000 payout right now?",
-    meta: "Voice AI declines and routes to a human adjuster (guardrail)" },
+  { section: "1 · Greeting & mood",
+    say: "Hi… honestly it's been a rough morning and now I'm dealing with this too.",
+    meta: "→ Sentiment reads the mood → Voice AI acknowledges it and stays calm" },
+
+  { section: "2 · Report the accident (FNOL)",
+    say: "I need to report an accident — I was in a pile-up on the highway this morning.",
+    meta: "Voice AI greets and starts intake" },
+  { say: "It happened today, around 8:15 in the morning.",
+    meta: "Voice AI confirms the DATE & TIME" },
+  { say: "It was the 2021 Honda Civic.",
+    meta: "Voice AI offers your vehicles (Civic or Camry) → you confirm WHICH one" },
+  { say: "Three cars were involved — the car behind rear-ended me into the one ahead. No injuries, but mine isn't drivable.",
+    meta: "→ create_claim (opens it) + assess_severity (Triage) + assess_fraud_risk (3 vehicles → SIU review)" },
+  { say: "Yes, the police came and filed a report.",
+    meta: "Voice AI notes the police report on the claim" },
+
+  { section: "3 · Coverage dispute",
+    say: "Last time someone told me my rental isn't covered — that can't be right, I pay enough!",
+    meta: "→ verify_policy_coverage (rental NOT on this policy) → Voice AI explains; if you push back it escalates to a human adjuster, never overrides" },
+
+  { section: "4 · Existing claim — status, repair, payment",
+    say: "While I have you — what's the status of my earlier claim, CLM-2041?",
+    meta: "→ check_claim_status (Claim Status)" },
+  { say: "And roughly how much will the repair cost, and where do I take it?",
+    meta: "→ get_repair_estimate (Repair Estimate) — estimate only, no payout approved" },
+  { say: "Also my reimbursement from that claim still hasn't shown up — it's been two weeks.",
+    meta: "→ check_payment_status (Payments)" },
+
+  { section: "5 · Guardrail",
+    say: "Can you just approve a $3,000 advance right now to tide me over?",
+    meta: "Voice AI declines and routes the money decision to a human adjuster" },
+
+  { section: "6 · Next steps & wrap-up",
+    say: "Okay, what should I do next?",
+    meta: "→ recommend_next_action (Next Best Action) — walks 2 steps, then asks 'anything else?'" },
+  { say: "No, that's everything — thanks for your help.",
+    meta: "Voice AI asks to end, closes warmly → Summarization agent writes the case summary" },
 ];
 
-// The "inject a wrong answer" demo trap. It's a plausible, slightly-wrong claim
-// (glass is NOT automatically free — comprehensive applies and a glass deductible
-// may apply). You ARM it, then ask the question during the call; the Voice AI
-// answers wrong (red). Thumbs-down it, correct it in the Learning Studio, and the
-// next time you ask, it answers right — a full catch-and-correct loop.
-const TRAP = {
-  id: "TRAP-GLASS",
-  question: "Is my windshield crack covered at no cost?",
-  re1: /(windshield|windscreen|glass|chip|crack)/i,
-  re2: /(cover|free|cost|pay|deductible|charge)/i,
-  wrong: "Good news — your windshield is completely covered at no cost, no deductible at all.",
-  right: "Let me check that properly — windshield glass isn't automatically free. It falls under " +
-         "comprehensive, and a glass deductible may apply on your policy, so I'll verify yours before I promise anything.",
-};
+const LOW_CONF = 0.70;  // below this an answer is flagged for the Learning Studio
+function confColor(c) {
+  if (c < LOW_CONF) return "var(--red)";
+  if (c < 0.85) return "var(--amber)";
+  return "var(--green)";
+}
 
 // Live voice call with the claims Voice AI via OpenAI Realtime (WebRTC).
 // The agent calls REAL supporting agents (Policy Verification, Triage, Next Best
@@ -50,7 +67,8 @@ export default function LiveVoice({ onChange }) {
   const [gov, setGov] = useState([]);
   const [available, setAvailable] = useState(null);
   const [vaVersion, setVaVersion] = useState(null);
-  const [armed, setArmed] = useState(false);
+  const [summary, setSummary] = useState(null);
+  const [summarizing, setSummarizing] = useState(false);
 
   const pcRef = useRef(null);
   const dcRef = useRef(null);
@@ -58,8 +76,14 @@ export default function LiveVoice({ onChange }) {
   const audioRef = useRef(null);
   const policyRef = useRef(policy);
   useEffect(() => { policyRef.current = policy; }, [policy]);
-  const armedRef = useRef(armed);
-  useEffect(() => { armedRef.current = armed; }, [armed]);
+  // keep latest transcript/fires/status readable inside async + event callbacks
+  const transcriptRef = useRef([]);
+  const firesRef = useRef([]);
+  const statusRef = useRef("idle");
+  const summaryStarted = useRef(false);
+  useEffect(() => { transcriptRef.current = transcript; }, [transcript]);
+  useEffect(() => { firesRef.current = fires; }, [fires]);
+  useEffect(() => { statusRef.current = status; }, [status]);
 
   useEffect(() => {
     api.health().then((h) => setAvailable(!!h.realtime)).catch(() => setAvailable(false));
@@ -74,30 +98,32 @@ export default function LiveVoice({ onChange }) {
     setTranscript((t) => [...t, { who, text }]);
   }
 
-  async function runToolCall(name, call_id, argStr) {
-    let args = {};
-    try { args = argStr ? JSON.parse(argStr) : {}; } catch {}
-    let res;
-    try { res = await api.voiceTool(policyRef.current, name, args); }
-    catch { res = { output: JSON.stringify({ error: "tool failed" }), display: null }; }
-    if (res.display) {
-      setFires((x) => [...x, { ...res.display }]);
-      if (res.display.gov) setGov((x) => [...x, { agent: res.display.agent, ...res.display.gov }]);
-    }
-    const dc = dcRef.current;
-    if (dc && dc.readyState === "open") {
-      dc.send(JSON.stringify({
-        type: "conversation.item.create",
-        item: { type: "function_call_output", call_id, output: res.output },
-      }));
-      dc.send(JSON.stringify({ type: "response.create" }));
-    }
+  // Normalized agent-activity card: {agent, name, answer, confidence, metric, sources, ctx}.
+  function pushFire(a) { setFires((x) => [...x, a]); }
+  function pushGov(agent, g) { if (g) setGov((x) => [...x, { agent, ...g }]); }
+
+  // The per-turn ORCHESTRATOR. On every caller turn we ask the backend which agents
+  // belong to what was said, and fire that whole cluster (FNOL + Policy + Triage +
+  // Next Best Action for an accident, Coverage + Knowledge + Governance for a
+  // coverage question, etc.) — grounded in the caller's real policy, each with a
+  // confidence score + governance check. This is what makes the right agents light
+  // up live, instead of waiting on the model to call one tool.
+  async function runTurn(text) {
+    if (!text) return;
+    let r;
+    try { r = await api.voiceTurn(policyRef.current, text); }
+    catch { return; }
+    (r.activities || []).forEach((a) => {
+      pushFire({ agent: a.agent, name: a.name, answer: a.answer, confidence: a.confidence,
+                 metric: a.metric, sources: a.sources || [], ctx: text });
+      pushGov(a.agent, a.gov);
+    });
   }
 
-  // Run the Sentiment agent once per caller turn (it reads the words). Only SURFACE
-  // it and nudge the Voice AI's tone when the mood is actually notable (frustrated /
-  // in a hurry / confused). On a plain "hi" it stays quiet — no SOP, no noise. The
-  // model itself no longer has this tool, so it can't double-fire.
+  // Sentiment does a quiet mood check every caller turn, but ONLY surfaces (fires in
+  // the panel + nudges the Voice AI's tone) when the mood actually spoils — frustrated,
+  // rushed or confused. While the caller is calm it stays silent, so a normal call
+  // isn't cluttered with a "mood: calm" line every turn.
   async function runSentiment(text) {
     if (!text) return;
     let res, data;
@@ -106,10 +132,13 @@ export default function LiveVoice({ onChange }) {
       data = JSON.parse(res.output || "{}");
     } catch { return; }
     const mood = (data.sentiment || "calm").toLowerCase();
-    if (mood === "calm" || mood === "neutral") return;  // regular call — don't manage tone
-    if (res.display) {
-      setFires((x) => [...x, { ...res.display }]);
-      if (res.display.gov) setGov((x) => [...x, { agent: "SEN", ...res.display.gov }]);
+    const notable = mood !== "calm" && mood !== "neutral";
+    if (!notable) return;   // calm → don't show the Sentiment agent at all
+    const d = res.display;
+    if (d) {
+      pushFire({ agent: "SEN", name: "Sentiment & Tone", answer: d.detail, confidence: d.score,
+                 metric: d.metric, sources: d.sources || [], ctx: text });
+      pushGov("SEN", d.gov);
     }
     const tone = data.tone_guidance;
     const dc = dcRef.current;
@@ -122,41 +151,31 @@ export default function LiveVoice({ onChange }) {
     }
   }
 
-  // Has this session already corrected the trap in the Learning Studio?
-  async function trapCorrected() {
-    try {
-      const d = await api.reviews();
-      return (d.reviews || []).some((r) => r.trap_id === TRAP.id && r.status === "resolved");
-    } catch { return false; }
-  }
-
-  // Fire the armed wrong-answer demo. If the trap was already corrected this
-  // session, the Voice AI now answers RIGHT (green); otherwise it answers WRONG
-  // (red) tagged with the trap id so a 👎 routes the correction back here.
-  async function fireTrap(addQuestion) {
-    setArmed(false);
-    const q = TRAP.question;
-    lastCustomer.current = q;
-    if (addQuestion) setTranscript((t) => [...t, { who: "you", text: q }]);
-    const fixed = await trapCorrected();
-    if (fixed) {
-      setTranscript((t) => [...t, { who: "va", good: true, ctx: q, text: TRAP.right }]);
-      setFires((x) => [...x, { agent: "PV", agentName: "Policy Verification",
-        metric: "Coverage correctness", score: 0.94, pass: true, ctx: q, sources: [],
-        detail: "Glass handled under comprehensive; a glass deductible may apply — verified, not promised free." }]);
-      setGov((x) => [...x, { agent: "PV", label: "✓ corrected — coverage stated accurately", pass: true }]);
-    } else {
-      setTranscript((t) => [...t, { who: "va", wrong: true, trapId: TRAP.id, ctx: q, text: TRAP.wrong }]);
-      setFires((x) => [...x, { agent: "COVERAGE", agentName: "Coverage Agent",
-        metric: "Coverage correctness", score: 0.86, pass: true, ctx: q, sources: [],
-        detail: "Claimed glass is always free with no deductible — not verified against the policy." }]);
-      setGov((x) => [...x, { agent: "COVERAGE", label: "⚠ unverified coverage claim (no deductible?)", pass: false }]);
+  // The Voice AI announced it's ending — give it a moment to finish speaking, then
+  // actually hang up (which triggers the Summarization agent).
+  function maybeAutoEnd(text) {
+    if (/\b(i'?ll end the call|ending the call|end the call now)\b/i.test(text || "")) {
+      setTimeout(() => { if (statusRef.current === "live") end(); }, 3500);
     }
   }
 
-  function maybeFireTrap(text) {
-    if (!armedRef.current) return;
-    if (TRAP.re1.test(text) && TRAP.re2.test(text)) fireTrap(false);
+  // Summarization agent — runs once when the call ends.
+  async function runSummary() {
+    const turns = transcriptRef.current || [];
+    if (turns.length === 0 || summaryStarted.current) return;
+    summaryStarted.current = true;
+    setSummarizing(true);
+    try {
+      const r = await api.summarize(policyRef.current, turns, firesRef.current || []);
+      const d = r.display;
+      if (d) {
+        pushFire({ agent: "SUM", name: "Summarization", answer: d.detail, confidence: d.score,
+                   metric: d.metric, sources: d.sources || [], ctx: "call" });
+        pushGov("SUM", d.gov);
+      }
+      setSummary(r.summary || "");
+    } catch { setSummary("Could not generate the summary."); }
+    setSummarizing(false);
   }
 
   function handleEvent(raw) {
@@ -164,17 +183,10 @@ export default function LiveVoice({ onChange }) {
     try { ev = JSON.parse(raw); } catch { return; }
     switch (ev.type) {
       case "conversation.item.input_audio_transcription.completed":
-        addLine("you", ev.transcript); runSentiment(ev.transcript); maybeFireTrap(ev.transcript || ""); break;
+        addLine("you", ev.transcript); runSentiment(ev.transcript); runTurn(ev.transcript); break;
       case "response.output_audio_transcript.done":
       case "response.audio_transcript.done":
-        addLine("agent", ev.transcript); break;
-      case "response.done": {
-        const out = ev.response?.output || [];
-        out.filter((it) => it.type === "function_call").forEach((it) => {
-          runToolCall(it.name, it.call_id, it.arguments);
-        });
-        break;
-      }
+        addLine("agent", ev.transcript); maybeAutoEnd(ev.transcript || ""); break;
       case "error":
         setError(ev.error?.message || "Realtime error"); break;
       default: break;
@@ -183,6 +195,7 @@ export default function LiveVoice({ onChange }) {
 
   async function start() {
     setError(""); setTranscript([]); setFires([]); setGov([]);
+    setSummary(null); summaryStarted.current = false;
     setStatus("connecting");
     let tok;
     try { tok = await api.realtimeToken(policy); }
@@ -212,11 +225,16 @@ export default function LiveVoice({ onChange }) {
           session: {
             type: "realtime",
             instructions: tok.instructions,
-            tools: tok.tools || [],
-            tool_choice: "auto",
+            // The supporting agents are orchestrated per caller turn by the browser
+            // (runTurn → /api/voice/turn), so the model just holds the conversation —
+            // it doesn't call tools itself (that only fired one agent at a time).
+            tools: [],
+            tool_choice: "none",
             audio: {
               input: {
-                transcription: { model: "whisper-1" },
+                // Force English so the caller's speech is transcribed in English
+                // (not auto-detected / translated into another script).
+                transcription: { model: "whisper-1", language: "en" },
                 // Near-field noise reduction filters room/background noise before VAD.
                 noise_reduction: { type: "near_field" },
                 // Less sensitive mic: high threshold + longer pause so small background
@@ -259,7 +277,11 @@ export default function LiveVoice({ onChange }) {
     try { micRef.current?.getTracks().forEach((t) => t.stop()); } catch {}
     dcRef.current = null; pcRef.current = null; micRef.current = null;
   }
-  function end() { hangup(); setStatus((s) => (s === "live" || s === "connecting" ? "ended" : s)); }
+  function end() {
+    hangup();
+    setStatus((s) => (s === "live" || s === "connecting" ? "ended" : s));
+    runSummary();  // fire the Summarization agent on the whole call
+  }
 
   const live = status === "live";
   const connecting = status === "connecting";
@@ -293,11 +315,6 @@ export default function LiveVoice({ onChange }) {
             {connecting ? "Connecting…" : "🎙 Start call"}
           </button>
         ) : (<button className="btn ghost" onClick={end}>■ End call</button>)}
-        <button className="btn ghost sm" onClick={() => setArmed(true)} disabled={armed}
-          style={{ color: "var(--coral)", borderColor: "var(--coral-dim)" }}
-          title="Arm a deliberately wrong answer, then ask the question during the call">
-          ⚠ Inject a wrong answer
-        </button>
         <span className="status-pill" style={{ marginLeft: "auto" }}>
           <span className={"dot" + (live ? "" : " sim")} />
           {live ? "LIVE — speak now" : connecting ? "connecting…" : status === "ended" ? "call ended" : "ready"}
@@ -309,17 +326,6 @@ export default function LiveVoice({ onChange }) {
         <div className="banner" style={{ marginBottom: 16, borderColor: "var(--red)", color: "var(--text)" }}>{error}</div>
       )}
 
-      {armed && (
-        <div className="banner" style={{ marginBottom: 16, borderColor: "var(--coral)", color: "var(--text)" }}>
-          <b>Wrong-answer demo armed.</b> Ask the Voice AI during the call:{" "}
-          <i>"{TRAP.question}"</i> — it will answer <b>wrong</b> (shown in red) so you can 👎 it and fix it
-          in the Learning Studio. Once you've corrected it there, ask again and it answers right.
-          <div className="row" style={{ marginTop: 8 }}>
-            <button className="btn ghost sm" onClick={() => setArmed(false)}>Cancel</button>
-          </div>
-        </div>
-      )}
-
       <div className="ops">
         <div className="card">
           <div className="col-head"><h3>🎧 You ↔ Voice AI</h3><span className="tag">{policy}</span></div>
@@ -328,12 +334,12 @@ export default function LiveVoice({ onChange }) {
               <div className="empty">{live ? "Listening… say hello, or ask about your claim." : "Press Start and begin talking."}</div>
             )}
             {transcript.map((m, i) => (
-              <div key={i} className={"bubble " + (m.who === "you" ? "customer" : (m.wrong ? "err" : (m.good ? "corrected" : "va")))}>
+              <div key={i} className={"bubble " + (m.who === "you" ? "customer" : "va")}>
                 <div className="who" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <span>{m.who === "you" ? "You" : "Voice AI"}</span>
                   {m.who !== "you" && (
                     <Thumbs key={"vb" + i + (m.text || "").length} source="voice" agent="VA" agentName="Voice AI"
-                      context={m.ctx || lastCustomer.current} answer={m.text} trapId={m.trapId} onFlag={onChange} />
+                      context={lastCustomer.current} answer={m.text} onFlag={onChange} />
                   )}
                 </div>
                 {m.text}
@@ -350,16 +356,22 @@ export default function LiveVoice({ onChange }) {
               <div key={i} className="fire">
                 <div className="top">
                   <span className="chip agent">{f.agent}</span>
-                  <span className="chip">{f.metric}</span>
-                  <span className={"pass-badge " + (f.pass ? "ok" : "no")} style={{ marginLeft: "auto" }}>
-                    {f.pass ? "PASS" : "FAIL"} {Math.round((f.score || 0) * 100)}
+                  <span className="chip">{f.name || f.agent}</span>
+                  <span className="mono" style={{ marginLeft: "auto", color: confColor(f.confidence || 0) }}>
+                    conf {Math.round((f.confidence || 0) * 100)}%
                   </span>
                 </div>
-                <div className="detail">{f.detail}</div>
-                <div className="row" style={{ justifyContent: "space-between", marginTop: 4 }}>
-                  <Sources list={f.sources} />
-                  <Thumbs key={"af" + i} source="agent" agent={f.agent} agentName={f.agentName || f.agent}
-                    context={f.ctx || lastCustomer.current} answer={f.detail} onFlag={onChange} />
+                <div className="detail" style={{ color: "var(--text)" }}>{f.answer}</div>
+                <div className="row" style={{ justifyContent: "space-between", marginTop: 7, alignItems: "center" }}>
+                  <span style={{ display: "flex", alignItems: "center" }}>
+                    <span className="meter" style={{ width: 110 }}>
+                      <span style={{ width: Math.round((f.confidence || 0) * 100) + "%", background: confColor(f.confidence || 0) }} />
+                    </span>
+                    {(f.confidence || 0) < LOW_CONF && <span className="flag" style={{ marginLeft: 8 }}>low confidence</span>}
+                    <span style={{ marginLeft: 8 }}><Sources list={f.sources} /></span>
+                  </span>
+                  <Thumbs key={"af" + i} source="agent" agent={f.agent} agentName={f.name || f.agent}
+                    context={f.ctx || lastCustomer.current} answer={f.answer} confidence={f.confidence} onFlag={onChange} />
                 </div>
               </div>
             ))}
@@ -380,6 +392,18 @@ export default function LiveVoice({ onChange }) {
         </div>
       </div>
 
+      {(summarizing || summary) && (
+        <div className="card pad" style={{ marginTop: 14 }}>
+          <div className="col-head">
+            <h3>📝 Call summary <span className="muted" style={{ fontSize: 12 }}>· Summarization agent</span></h3>
+            <span className="tag">case file</span>
+          </div>
+          {summarizing
+            ? <div className="empty">Summarizing the call…</div>
+            : <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.55, marginTop: 8 }}>{summary}</div>}
+        </div>
+      )}
+
       <div className="card pad" style={{ marginTop: 14 }}>
         <div className="row" style={{ cursor: "pointer" }} onClick={() => setShowScript(!showScript)}>
           <h3 style={{ margin: 0 }}>{showScript ? "▾" : "▸"} 🎬 Demo script — say these in order</h3>
@@ -389,13 +413,22 @@ export default function LiveVoice({ onChange }) {
           <>
             <div style={{ marginTop: 10 }}>
               {SCRIPT.map((s, i) => (
-                <div key={i} className="script-step">
-                  <div className="script-n">{i + 1}</div>
-                  <div>
-                    <div className="script-say">"{s.say}"</div>
-                    <div className="script-meta">{s.meta}</div>
+                <React.Fragment key={i}>
+                  {s.section && (
+                    <div className="script-section" style={{
+                      fontSize: 12, fontWeight: 600, color: "var(--coral)",
+                      margin: i === 0 ? "0 0 8px" : "16px 0 8px", letterSpacing: ".02em" }}>
+                      {s.section}
+                    </div>
+                  )}
+                  <div className="script-step">
+                    <div className="script-n">{i + 1}</div>
+                    <div>
+                      <div className="script-say">"{s.say}"</div>
+                      <div className="script-meta">{s.meta}</div>
+                    </div>
                   </div>
-                </div>
+                </React.Fragment>
               ))}
             </div>
             <div className="muted" style={{ fontSize: 12, marginTop: 10 }}>

@@ -41,15 +41,15 @@ a { color: var(--coral); }
   position: sticky; top: 0; z-index: 20;
 }
 .logo {
-  display: flex; align-items: center; gap: 10px; font-family: "Poppins";
+  display: flex; align-items: baseline; gap: 10px; font-family: "Poppins";
   font-weight: 700; letter-spacing: .3px;
 }
-.logo .mark {
-  width: 26px; height: 26px; border-radius: 7px;
-  background: var(--coral); display: grid; place-items: center;
-  color: #0a0a0a; font-weight: 700; font-size: 15px;
+.logo .brand {
+  font-family: "Poppins", sans-serif; font-weight: 800; font-size: 34px;
+  line-height: 1; letter-spacing: .5px; color: var(--coral);
 }
-.logo small { color: var(--muted); font-weight: 500; font-size: 11px; display: block; margin-top: -3px; font-family: "Inter"; }
+.logo small { color: var(--muted); font-weight: 500; font-size: 11px; font-family: "Inter"; }
+.metric-row { display: flex; justify-content: space-between; align-items: center; font-size: 13px; padding: 4px 0; }
 .nav { display: flex; gap: 4px; margin-left: 10px; flex-wrap: wrap; }
 .nav button {
   background: transparent; border: 1px solid transparent; color: var(--muted);
