@@ -68,12 +68,19 @@ SENTIMENT_SOP = {
 
 def detect_sentiment(text: str) -> str:
     t = (text or "").lower()
-    frustrated = ["angry", "frustrat", "ridiculous", "five times", "nobody", "useless",
-                  "terrible", "unacceptable", "fed up", "annoyed", "upset", "worst"]
+    frustrated = ["angry", "frustrat", "ridiculous", "five times", "nobody is helping",
+                  "nobody has helped", "no one is helping", "no one has helped", "nobody cares",
+                  "useless", "terrible", "unacceptable", "fed up", "annoyed", "upset",
+                  "worst", "sick of", "tired of", "not happy", "disappointed", "waited",
+                  "waiting", "chasing", "chase", "again and again", "keep calling",
+                  "so many times", "irritated", "pathetic", "horrible", "furious",
+                  "done with", "this is wrong", "nonsense", "wasting my time",
+                  "rough morning", "rough day", "stressed", "stressful", "bad day", "terrible day"]
     urgent = ["quick", "hurry", "asap", "right now", "immediately", "urgent", "emergency",
-              "fast", "no time", "in a rush"]
-    confused = ["don't understand", "confus", "what do you mean", "not sure", "lost",
-                "complicated", "makes no sense"]
+              "fast", "no time", "in a rush", "running late", "make it quick", "hurry up"]
+    confused = ["don't understand", "do not understand", "understand any", "confus",
+                "what do you mean", "not sure", "lost", "complicated", "makes no sense",
+                "i'm confused", "unclear", "can you explain", "doesn't make sense"]
     if any(w in t for w in frustrated):
         return "frustrated"
     if any(w in t for w in urgent):

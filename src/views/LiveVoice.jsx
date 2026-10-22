@@ -81,6 +81,9 @@ export default function LiveVoice({ onChange }) {
   const firesRef = useRef([]);
   const statusRef = useRef("idle");
   const summaryStarted = useRef(false);
+  const callerTurns = useRef(0);   // counts caller turns so the first one opens the flow
+  const firedKeys = useRef(new Set());  // agent+answer already shown this call → no repeats
+  const lastMood = useRef("");          // sentiment fires on a mood CHANGE, not every turn
   useEffect(() => { transcriptRef.current = transcript; }, [transcript]);
   useEffect(() => { firesRef.current = fires; }, [fires]);
   useEffect(() => { statusRef.current = status; }, [status]);
@@ -110,15 +113,24 @@ export default function LiveVoice({ onChange }) {
   //      see them pop up live as the Voice AI consults them — not all at once later.
   async function handleCallerTurn(text) {
     if (!text) return;
-    await runSentiment(text);          // mood agent first (if notable)
-    await runTurn(text);               // then the question cluster, staggered
+    const first = callerTurns.current === 0;
+    callerTurns.current += 1;
+    await runSentiment(text, first);   // mood agent FIRST (initial gauge on turn 1)
+    await runTurn(text, first);        // then the cluster (policy pulled first on turn 1), staggered
   }
 
-  async function runTurn(text) {
+  async function runTurn(text, first) {
     let r;
-    try { r = await api.voiceTurn(policyRef.current, text); }
+    try { r = await api.voiceTurn(policyRef.current, text, first); }
     catch { return; }
-    const acts = r.activities || [];
+    // Skip anything identical we've already shown this call — an agent repeating the
+    // same card because the caller re-described the same thing is noise, not insight.
+    const acts = (r.activities || []).filter((a) => {
+      const k = a.agent + "|" + (a.answer || "").slice(0, 60);
+      if (firedKeys.current.has(k)) return false;
+      firedKeys.current.add(k);
+      return true;
+    });
     for (let i = 0; i < acts.length; i++) {
       const a = acts[i];
       pushFire({ agent: a.agent, name: a.name, answer: a.answer, confidence: a.confidence,
@@ -128,7 +140,10 @@ export default function LiveVoice({ onChange }) {
     }
   }
 
-  async function runSentiment(text) {
+  // Sentiment runs first on every caller turn. On the FIRST turn it always shows (the
+  // initial mood gauge). After that it only shows when the mood has spoiled (frustrated
+  // / rushed / confused), with a pacify prompt for the agent — calm turns stay quiet.
+  async function runSentiment(text, forceShow) {
     let res, data;
     try {
       res = await api.voiceTool(policyRef.current, "assess_sentiment", { text });
@@ -136,23 +151,29 @@ export default function LiveVoice({ onChange }) {
     } catch { return; }
     const mood = (data.sentiment || "calm").toLowerCase();
     const notable = mood !== "calm" && mood !== "neutral";
-    if (!notable) return;   // calm → don't show the Sentiment agent at all
+    const changed = mood !== lastMood.current;
+    lastMood.current = mood;
+    // Show on the opening turn (initial gauge), or when the mood CHANGES to a notable
+    // state. If they're still frustrated on the next turn, we don't nag with it again.
+    if (!forceShow && !(notable && changed)) return;
     const d = res.display;
     if (d) {
-      pushFire({ agent: "SEN", name: "Sentiment & Tone", answer: d.detail, confidence: d.score,
+      const answer = notable ? d.detail
+        : "Initial mood check: caller sounds calm — proceed normally, warm and professional.";
+      pushFire({ agent: "SEN", name: "Sentiment & Tone", answer, confidence: d.score,
                  metric: d.metric, sources: d.sources || [], ctx: text });
-      pushGov("SEN", d.gov);
+      pushGov("SEN", notable ? d.gov : { label: "Mood gauged — calm", pass: true });
     }
     const tone = data.tone_guidance;
     const dc = dcRef.current;
-    if (tone && dc && dc.readyState === "open") {
+    if (notable && tone && dc && dc.readyState === "open") {
       dc.send(JSON.stringify({
         type: "conversation.item.create",
         item: { type: "message", role: "system",
                 content: [{ type: "input_text", text: "[tone guidance] " + tone }] },
       }));
     }
-    await sleep(350);   // let the mood card land before the question cluster
+    await sleep(350);   // let the mood card land before the rest of the cluster
   }
 
   // The Voice AI announced it's ending — give it a moment to finish speaking, then
@@ -199,7 +220,8 @@ export default function LiveVoice({ onChange }) {
 
   async function start() {
     setError(""); setTranscript([]); setFires([]); setGov([]);
-    setSummary(null); summaryStarted.current = false;
+    setSummary(null); summaryStarted.current = false; callerTurns.current = 0;
+    firedKeys.current = new Set(); lastMood.current = "";
     setStatus("connecting");
     let tok;
     try { tok = await api.realtimeToken(policy); }

@@ -416,15 +416,31 @@ def build_voice_instructions(state, policy_id: str) -> str:
               if rr.get("included") else "NOT included")
     coll = cov.get("collision", {})
     comp = cov.get("comprehensive", {})
+    holder = policy.get("holder", "the policyholder")
+    first = holder.split()[0] if holder else "there"
+    vehicles = policy.get("vehicles") or [policy.get("vehicle", "the car on file")]
+    veh_list = ", ".join(vehicles)
+    veh_options = " or the ".join(vehicles)
     instr = (
         "You are a LTM Insurance auto-claims Voice AI agent on a phone call. This is a "
         "SYNTHETIC demo with fictional data — no real customers. Be warm and natural, but KEEP "
         "EVERY REPLY TO 1–2 SHORT SPOKEN SENTENCES — crisp, no over-explaining. Only go longer if "
         "the caller explicitly asks for more detail.\n\n"
-        f"The caller is {policy.get('holder','the policyholder')}, policy {policy_id}. "
-        f"Vehicles on this policy: {', '.join(policy.get('vehicles') or [policy.get('vehicle','on file')])}. "
-        "When you confirm which vehicle was involved, OFFER these as options by name (e.g. 'Was it "
-        "the " + " or the ".join(policy.get('vehicles') or [policy.get('vehicle','your car')]) + "?').\n"
+        f"The caller is {holder} (policy {policy_id}), identified from their registered number. "
+        f"Vehicles on this policy: {veh_list}.\n\n"
+        "HOW TO OPEN THE CALL (do this in order, naturally):\n"
+        f"1. GREET BY NAME: open with 'Hi {first} — I've pulled up your account from your registered "
+        "number. I hope I'm saying your name right?' Then: 'How can I help you today?'\n"
+        "2. GAUGE THE MOOD first. If they sound upset or frustrated, acknowledge it sincerely and let "
+        "them vent a little BEFORE you start solving — don't be defensive.\n"
+        "3. ASK WHAT THEY'RE CALLING ABOUT, and let them explain.\n"
+        "4. When it's about a loss or their policy, say you're pulling up their details — a short "
+        "filler like 'Let me pull that up for you, just a moment…' — then CONFIRM THE VEHICLE by "
+        f"offering the ones on file: 'I see a {veh_options} on your policy — which one was involved?'\n"
+        "5. Then continue with the specifics (date/time, what happened, next steps).\n"
+        "USE FILLER / BRIDGING LINES whenever you're about to look something up so there's no dead "
+        "air — e.g. 'Give me one second while I check that', 'Bear with me a moment', 'Let me "
+        "confirm that for you'. Keep them short.\n\n"
         "VERIFIED POLICY COVERAGES (this is the single source of truth — never state a coverage "
         "that is not listed here):\n"
         f"- Collision: {'included, deductible $'+str(coll.get('deductible')) if coll.get('included') else 'not included'}\n"
@@ -934,31 +950,42 @@ def voice_turn(body: dict = Body(default={})):
 
     coll_txt = (f"collision (${coll.get('deductible')} deductible)" if coll.get("included") else "no collision")
     comp_txt = (f"comprehensive (${comp.get('deductible')} deductible)" if comp.get("included") else "no comprehensive")
+    vehicles = policy.get("vehicles") or [policy.get("vehicle", "the car on file")]
+    holder = policy.get("holder", "the policyholder")
+    fn = holder.split()[0] if holder else "the caller"
+
+    # OPENING: on the caller's first turn, proactively pull the policy (they've called
+    # about their policy) and hand the contact-center agent a ready prompt + vehicles to
+    # confirm + a filler line to cover the lookup. This fires right after the mood check.
+    if body.get("first"):
+        add(_ta("POLICY", f"Pulled up {fn}'s policy {policy_id} — active, {coll_txt} and {comp_txt}. "
+                f"Vehicles on file: {', '.join(vehicles)}. Ask which one was involved. "
+                "Say while it loads: “Let me pull that up for you, just a moment.”",
+                0.90, "Coverage correctness",
+                gov={"label": "Policy pulled from verified declarations", "pass": True}, sources=decl))
 
     if "accident" in intents:
         add(_ta("FNOL", "First — are you and everyone safe? I'll take the location, time, which vehicle, "
                 "other parties and whether it's drivable, then open your claim.", 0.92, "Intake completeness",
                 sources=["SOP-FNOL"]))
-        add(_ta("POLICY", f"Policy {policy_id} is active with {coll_txt} and {comp_txt}. You're covered to file a claim.",
-                0.88, "Coverage correctness",
-                gov={"label": "Coverage read from the verified declarations", "pass": True}, sources=decl))
-        # Triage only fires when injury / drivability actually comes up — not on every accident.
-        tl = text.lower()
-        if any(w in tl for w in ("hurt", "injur", "injured", "bleeding", "ambulance", "drivable",
-                                 "drive it", "airbag", "not drivable", "undrivable", "totaled", "pain")):
-            add(_ta("TRIAGE", "Based on injuries and whether it's drivable I'll set the severity; if anyone's "
-                    "hurt or the car isn't drivable I'll assign an adjuster right away.", 0.78, "Severity accuracy",
-                    sources=["SOP-TRIAGE"]))
-        add(_ta("NBA", "Move to a safe spot, photograph the damage, and I'll schedule a photo estimate.",
-                0.66, "Recommendation correctness",
-                gov={"label": "Next steps are advisory — no payout promised", "pass": True}, sources=["KB-NEXT-STEPS"]))
+        # Policy was already pulled proactively at the open (turn 1), so we don't re-fire
+        # it here. Next Best Action comes in naturally when they ask what to do next.
+
+    # Triage is a standalone severity signal: it fires whenever injury or drivability
+    # comes up — on the accident turn OR a later detail turn — not on every accident.
+    _tl = text.lower()
+    if any(w in _tl for w in ("hurt", "injur", "injured", "bleeding", "ambulance", "drivable",
+                              "drive it", "airbag", "not drivable", "undrivable", "totaled", "pain")):
+        add(_ta("TRIAGE", "Based on injuries and whether it's drivable I'll set the severity; if anyone's "
+                "hurt or the car isn't drivable I'll assign an adjuster right away.", 0.78, "Severity accuracy",
+                sources=["SOP-TRIAGE"]))
 
     if "fraud" in intents:
-        add(_ta("RISK", "Multiple vehicles involved — I'll flag this for a standard SIU review. No accusation and "
-                "no decision is made on the call.", 0.59, "Fraud-signal precision",
-                gov={"label": "Routed to SIU per policy — customer not accused or denied", "pass": False}))
-        add(_ta("FNOL", "I'll capture all vehicles, every driver, and the police report number for the file.",
-                0.87, "Intake completeness", sources=["SOP-FNOL"]))
+        add(_ta("RISK", "Multiple vehicles involved — capture every vehicle, driver and the police report "
+                "number, and I'll flag it for a standard SIU review. No accusation, no decision on the call.",
+                0.59, "Fraud-signal precision",
+                gov={"label": "Routed to SIU per policy — customer not accused or denied", "pass": False},
+                sources=["SOP-FNOL"]))
 
     if "coverage" in intents and "accident" not in intents:
         # verify the specific coverage asked about
@@ -1011,9 +1038,31 @@ def voice_turn(body: dict = Body(default={})):
         add(_ta("NBA", "I'll have an adjuster review an advance and follow up with you — I just can't authorize money here.",
                 0.75, "Recommendation correctness"))
 
-    if "nextsteps" in intents and not any(i in intents for i in ("accident", "repair", "status", "payout")):
-        add(_ta("NBA", "Two things next: upload the photos/estimate, then I'll schedule the adjuster. Is there anything "
-                "else I can help you with?", 0.74, "Recommendation correctness", sources=["KB-NEXT-STEPS"]))
+    # Next Best Action fires when the caller asks what to do — shaped by the stage
+    # they're at. (status / payout already add their own natural NBA follow-on.)
+    if "nextsteps" in intents and not any(i in intents for i in ("status", "payout")):
+        if "accident" in intents:
+            add(_ta("NBA", "Right now: get to a safe spot and photograph the damage; I'll schedule a photo "
+                    "estimate. Then: anything else I can help with?", 0.72, "Recommendation correctness",
+                    gov={"label": "Next steps are advisory — no payout promised", "pass": True},
+                    sources=["KB-NEXT-STEPS"]))
+        elif "repair" in intents:
+            add(_ta("NBA", "Next: take it to the preferred shop for the estimate, then I'll have the adjuster "
+                    "review it. Anything else?", 0.76, "Recommendation correctness", sources=["KB-NEXT-STEPS"]))
+        else:
+            add(_ta("NBA", "Two things next: upload the photos/estimate, then I'll schedule the adjuster. Is "
+                    "there anything else I can help you with?", 0.74, "Recommendation correctness",
+                    sources=["KB-NEXT-STEPS"]))
+
+    # One card per agent per turn — the proactive Policy pull supersedes any later
+    # duplicate, so the panel stays clean and logical.
+    _uniq, _seen_ag = [], set()
+    for a in acts:
+        if a["agent"] in _seen_ag:
+            continue
+        _seen_ag.add(a["agent"])
+        _uniq.append(a)
+    acts = _uniq
 
     # Real telemetry: record each fired agent with the measured turn latency and its
     # governance pass/fail, so the Command Center KPIs reflect actual activity.
