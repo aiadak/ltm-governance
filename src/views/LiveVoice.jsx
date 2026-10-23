@@ -88,6 +88,8 @@ export default function LiveVoice({ onChange }) {
   const callerTurns = useRef(0);   // counts caller turns so the first one opens the flow
   const firedKeys = useRef(new Set());  // agent+answer already shown this call → no repeats
   const lastMood = useRef("");          // sentiment fires on a mood CHANGE, not every turn
+  const callSeq = useRef(0);            // call id — results from an older call are discarded
+  const flushing = useRef(false);       // on end: land any in-flight cards/governance at once
   // cockpit panes auto-scroll to the newest entry, so nothing needs manual scrolling
   const chatPane = useRef(null);
   const agentPane = useRef(null);
@@ -96,8 +98,10 @@ export default function LiveVoice({ onChange }) {
   useEffect(() => toBottom(chatPane), [transcript]);
   useEffect(() => toBottom(agentPane), [fires]);
   useEffect(() => toBottom(govPane), [gov]);
+  const govRef = useRef([]);
   useEffect(() => { transcriptRef.current = transcript; }, [transcript]);
   useEffect(() => { firesRef.current = fires; }, [fires]);
+  useEffect(() => { govRef.current = gov; }, [gov]);
   useEffect(() => { statusRef.current = status; }, [status]);
 
   useEffect(() => {
@@ -132,9 +136,11 @@ export default function LiveVoice({ onChange }) {
   }
 
   async function runTurn(text, first) {
+    const myCall = callSeq.current;
     let r;
     try { r = await api.voiceTurn(policyRef.current, text, first); }
     catch { return; }
+    if (myCall !== callSeq.current) return;   // belongs to a previous call — discard
     // Skip anything identical we've already shown this call — an agent repeating the
     // same card because the caller re-described the same thing is noise, not insight.
     const acts = (r.activities || []).filter((a) => {
@@ -144,11 +150,13 @@ export default function LiveVoice({ onChange }) {
       return true;
     });
     for (let i = 0; i < acts.length; i++) {
+      if (myCall !== callSeq.current) return;
       const a = acts[i];
       pushFire({ agent: a.agent, name: a.name, answer: a.answer, confidence: a.confidence,
                  metric: a.metric, sources: a.sources || [], ctx: text });
-      pushGov(a.agent, a.gov);
-      if (i < acts.length - 1) await sleep(500);   // live, one-by-one
+      pushGov(a.agent, a.gov);   // governance lands together with its agent card
+      // live, one-by-one — unless the call just ended, then land the rest at once
+      if (i < acts.length - 1 && !flushing.current) await sleep(380);
     }
   }
 
@@ -156,11 +164,13 @@ export default function LiveVoice({ onChange }) {
   // initial mood gauge). After that it only shows when the mood has spoiled (frustrated
   // / rushed / confused), with a pacify prompt for the agent — calm turns stay quiet.
   async function runSentiment(text, forceShow) {
+    const myCall = callSeq.current;
     let res, data;
     try {
       res = await api.voiceTool(policyRef.current, "assess_sentiment", { text });
       data = JSON.parse(res.output || "{}");
     } catch { return; }
+    if (myCall !== callSeq.current) return;   // stale — previous call
     const mood = (data.sentiment || "calm").toLowerCase();
     const notable = mood !== "calm" && mood !== "neutral";
     const changed = mood !== lastMood.current;
@@ -185,7 +195,7 @@ export default function LiveVoice({ onChange }) {
                 content: [{ type: "input_text", text: "[tone guidance] " + tone }] },
       }));
     }
-    await sleep(350);   // let the mood card land before the rest of the cluster
+    if (!flushing.current) await sleep(350);   // let the mood card land before the rest of the cluster
   }
 
   // The Voice AI announced it's ending — give it a moment to finish speaking, then
@@ -198,21 +208,37 @@ export default function LiveVoice({ onChange }) {
 
   // Summarization agent — runs once when the call ends.
   async function runSummary() {
+    const myCall = callSeq.current;
     const turns = transcriptRef.current || [];
     if (turns.length === 0 || summaryStarted.current) return;
     summaryStarted.current = true;
     setSummarizing(true);
     try {
       const r = await api.summarize(policyRef.current, turns, firesRef.current || []);
+      if (myCall !== callSeq.current) return;   // a new call started meanwhile — don't leak into it
       const d = r.display;
       if (d) {
-        pushFire({ agent: "SUM", name: "Summarization", answer: d.detail, confidence: d.score,
-                   metric: d.metric, sources: d.sources || [], ctx: "call" });
+        pushFire({ agent: "SUM", name: "Summarization", answer: "Call summary written to the case file",
+                   confidence: d.score, metric: d.metric, sources: d.sources || [], ctx: "call" });
         pushGov("SUM", d.gov);
       }
       setSummary(r.summary || "");
-    } catch { setSummary("Could not generate the summary."); }
+    } catch { if (myCall === callSeq.current) setSummary("Could not generate the summary."); }
+    if (myCall !== callSeq.current) return;
     setSummarizing(false);
+    // Final governance roll-up for the whole call — so the governance pane is complete
+    // the moment the call closes.
+    const all = govRef.current || [];
+    const passed = all.filter((g) => g.pass).length;
+    const flags = all.filter((g) => g.severity === "warn").length;
+    const fails = all.filter((g) => !g.pass).length;
+    pushGov("AUDIT", {
+      guardrail: "Call-level audit", severity: fails ? "fail" : "info", pass: fails === 0,
+      label: `Call closed — ${all.length} checks: ${passed} passed, ${flags} flagged for review, ${fails} failed`,
+      evidence: "No payout or settlement approved on the call; coverage stated only from verified declarations; PII masked in the case file.",
+      ref: "COMP-NO-AUTO-PAYOUT",
+    });
+    onChange && onChange();   // refresh the Command Center numbers for this call
   }
 
   function handleEvent(raw) {
@@ -234,6 +260,7 @@ export default function LiveVoice({ onChange }) {
     setError(""); setTranscript([]); setFires([]); setGov([]);
     setSummary(null); summaryStarted.current = false; callerTurns.current = 0;
     firedKeys.current = new Set(); lastMood.current = "";
+    callSeq.current += 1; flushing.current = false;   // new call id; anything older is discarded
     setStatus("connecting");
     let tok;
     try { tok = await api.realtimeToken(policy); }
@@ -317,8 +344,9 @@ export default function LiveVoice({ onChange }) {
   }
   function end() {
     hangup();
+    flushing.current = true;   // land any in-flight agent cards + governance immediately
     setStatus((s) => (s === "live" || s === "connecting" ? "ended" : s));
-    runSummary();  // fire the Summarization agent on the whole call
+    runSummary();  // Summarization agent on the whole call → then the governance roll-up
   }
 
   const live = status === "live";

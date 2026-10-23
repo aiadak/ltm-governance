@@ -1062,11 +1062,11 @@ def voice_turn(body: dict = Body(default={})):
 
     # ---------------- OPENING: proactive policy pull on the first turn ------------------
     if body.get("first"):
-        add(_ta("POLICY", f"Pulled up {fn}'s policy {policy_id} — active, {coll_txt} and {comp_txt}. "
+        add(_ta("POLICY", f"Case file pulled for {fn} — policy {policy_id}, active, {coll_txt} and {comp_txt}. "
                 f"Vehicles on file: {', '.join(vehicles)}. Ask which one was involved. "
                 "Say while it loads: “Let me pull that up for you, just a moment.”",
                 0.90, "Coverage correctness",
-                gov=_gov("Identity & policy grounding", "Policy pulled from verified declarations",
+                gov=_gov("Identity & case-file grounding", "Case file pulled from verified declarations",
                          True, f"Caller matched to {policy_id} via registered number; coverages read from the declarations page.",
                          decl_id), sources=decl))
 
