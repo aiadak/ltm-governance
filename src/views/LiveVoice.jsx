@@ -431,9 +431,18 @@ export default function LiveVoice({ onChange }) {
           <div className="col-body" ref={govPane}>
             {gov.length === 0 && <div className="empty">Green checks / red flags appear here.</div>}
             {gov.map((g, i) => (
-              <div key={i} className={"gov " + (g.pass ? "pass" : "fail")}>
-                <div className="icn">{g.pass ? "✓" : "✕"}</div>
-                <div><div className="who">{g.agent}</div><div>{g.label}</div></div>
+              <div key={i} className={"gov " + (g.pass ? "pass" : "fail") + (g.severity === "warn" ? " warn" : "")}>
+                <div className="icn">{!g.pass ? "✕" : g.severity === "warn" ? "⚑" : "✓"}</div>
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div className="row" style={{ gap: 6, alignItems: "center" }}>
+                    <span className="who">{g.agent}</span>
+                    {g.guardrail && <span className="gov-guard">{g.guardrail}</span>}
+                    {g.ref && <span className="cite" style={{ marginLeft: "auto" }}
+                      onClick={() => { window.location.hash = "doc=" + g.ref; }}>{g.ref}</span>}
+                  </div>
+                  <div style={{ marginTop: 3 }}>{g.label}</div>
+                  {g.evidence && <div className="gov-evidence">{g.evidence}</div>}
+                </div>
               </div>
             ))}
           </div>

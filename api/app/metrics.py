@@ -19,9 +19,11 @@ _agent_calls = []   # {agent, ms, passed, t}
 _llm_calls = []     # {ms, tin, tout, source, t}
 
 
-def record_agent(agent: str, ms: float, passed: bool = True):
+def record_agent(agent: str, ms: float, passed: bool = True, confidence=None, tin: int = 0, tout: int = 0):
     with _LOCK:
-        _agent_calls.append({"agent": agent, "ms": float(ms), "passed": bool(passed), "t": time.time()})
+        _agent_calls.append({"agent": agent, "ms": float(ms), "passed": bool(passed),
+                             "conf": (float(confidence) if confidence is not None else None),
+                             "tin": int(tin or 0), "tout": int(tout or 0), "t": time.time()})
         if len(_agent_calls) > _MAX:
             del _agent_calls[: len(_agent_calls) - _MAX]
 
@@ -54,22 +56,33 @@ def snapshot() -> dict:
     tout = sum(l["tout"] for l in llms)
 
     per = {}
+    a_tin = a_tout = 0
     for a in agents:
-        d = per.setdefault(a["agent"], {"calls": 0, "passed": 0, "ms": []})
+        d = per.setdefault(a["agent"], {"calls": 0, "passed": 0, "ms": [], "conf": [], "tin": 0, "tout": 0})
         d["calls"] += 1
         d["passed"] += 1 if a["passed"] else 0
         d["ms"].append(a["ms"])
+        if a.get("conf") is not None:
+            d["conf"].append(a["conf"])
+        d["tin"] += a.get("tin", 0)
+        d["tout"] += a.get("tout", 0)
+        a_tin += a.get("tin", 0)
+        a_tout += a.get("tout", 0)
 
+    # token economics = real LLM calls + per-agent (estimated) footprints
+    tin_all, tout_all = tin + a_tin, tout + a_tout
     return {
         "has_data": n > 0,
         "agent_calls": n,
         "llm_calls": len(llms),
         "pass_rate": round(100.0 * passed / n, 1) if n else 0.0,
         "latency_ms": {"p50": _pct(ms_all, 50), "p95": _pct(ms_all, 95), "p99": _pct(ms_all, 99)},
-        "tokens": {"input": tin, "output": tout, "total": tin + tout},
+        "tokens": {"input": tin_all, "output": tout_all, "total": tin_all + tout_all},
         "per_agent": {k: {"calls": v["calls"],
                           "pass_rate": round(100.0 * v["passed"] / v["calls"], 1) if v["calls"] else 0.0,
-                          "p50_ms": _pct(v["ms"], 50), "p95_ms": _pct(v["ms"], 95)}
+                          "avg_conf": round(100.0 * sum(v["conf"]) / len(v["conf"])) if v["conf"] else None,
+                          "p50_ms": _pct(v["ms"], 50), "p95_ms": _pct(v["ms"], 95),
+                          "tokens": v["tin"] + v["tout"], "tin": v["tin"], "tout": v["tout"]}
                       for k, v in per.items()},
     }
 

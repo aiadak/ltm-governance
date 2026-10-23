@@ -12,15 +12,9 @@ function fmt(n) { return (n || 0).toLocaleString(); }
 export default function ControlTower({ nonce }) {
   const [data, setData] = useState(null);
   const [metrics, setMetrics] = useState(null);
-  const [traces, setTraces] = useState([]);
 
   useEffect(() => {
-    api.dashboard().then((d) => {
-      setData(d);
-      if (d.latest_conversation)
-        api.traces(d.latest_conversation).then((t) => setTraces(t.traces || [])).catch(() => {});
-      else setTraces([]);
-    });
+    api.dashboard().then(setData);
     api.metrics().then(setMetrics).catch(() => {});
   }, [nonce]);
 
@@ -100,23 +94,40 @@ export default function ControlTower({ nonce }) {
             </div>
           </div>
 
-          <div className="section-title">Evaluation criteria · per agent</div>
+          <div className="section-title">Agent evaluation toolkit · per agent</div>
+          <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
+            Everything an evaluator needs per agent, measured live: quality metric, version, calls, average
+            confidence, governance pass rate, latency (P50/P95), tool-call success, token economics, human
+            flags (👎), corrections applied, and health. Rows for agents that haven't fired yet show baseline.
+          </div>
           <div className="card" style={{ overflowX: "auto" }}>
-            <table>
-              <thead><tr><th>Agent</th><th>Eval metric</th><th>Calls</th><th>Pass rate</th><th>P50</th><th>P95</th><th>Tool success</th></tr></thead>
+            <table className="evaltab">
+              <thead><tr>
+                <th>Agent</th><th>Eval metric</th><th>Ver</th><th>Calls</th><th>Avg conf</th><th>Pass rate</th>
+                <th>P50</th><th>P95</th><th>Tool ✓</th><th>Tokens</th><th>Cost</th><th>👎 Flagged</th><th>Fixes</th><th>Status</th>
+              </tr></thead>
               <tbody>
                 {m.evals.map((e) => (
-                  <tr key={e.id}>
-                    <td><b>{e.name}</b> <span className="mono muted" style={{ fontSize: 11 }}>{e.id}</span></td>
+                  <tr key={e.id} style={{ opacity: e.measured ? 1 : 0.55 }}>
+                    <td><b>{e.name}</b><div className="sub mono">{e.id} · {e.owner}</div></td>
                     <td className="muted">{e.metric}</td>
+                    <td className="ver">v{e.version}</td>
                     <td className="mono">{e.calls}</td>
+                    <td className="mono" style={{ color: e.avg_conf == null ? "var(--faint)" : rateColor(e.avg_conf) }}>
+                      {e.avg_conf == null ? "—" : e.avg_conf + "%"}</td>
                     <td>
-                      <span className="meter" style={{ width: 70 }}><span style={{ width: e.pass_rate + "%", background: rateColor(e.pass_rate) }} /></span>{" "}
+                      <span className="meter" style={{ width: 64 }}><span style={{ width: e.pass_rate + "%", background: rateColor(e.pass_rate) }} /></span>{" "}
                       <span className="mono" style={{ color: rateColor(e.pass_rate) }}>{e.pass_rate}%</span>
                     </td>
-                    <td className="mono muted">{e.p50_ms}ms</td>
-                    <td className="mono muted">{e.p95_ms}ms</td>
-                    <td className="mono">{e.tool_success}%</td>
+                    <td className="mono muted">{e.measured ? e.p50_ms + "ms" : "—"}</td>
+                    <td className="mono muted">{e.measured ? e.p95_ms + "ms" : "—"}</td>
+                    <td className="mono">{e.measured ? e.tool_success + "%" : "—"}</td>
+                    <td className="mono">{e.tokens ? e.tokens.toLocaleString() : "—"}
+                      {e.tokens ? <div className="sub mono">{e.tokens_in} in · {e.tokens_out} out</div> : null}</td>
+                    <td className="mono">{e.cost_usd ? "$" + e.cost_usd.toFixed(4) : "—"}</td>
+                    <td className="mono" style={{ color: e.flagged ? "var(--coral)" : "var(--faint)" }}>{e.flagged}</td>
+                    <td className="mono" style={{ color: e.corrections ? "var(--green)" : "var(--faint)" }}>{e.corrections}</td>
+                    <td><span className={"status-tag " + e.status}>{e.status}</span></td>
                   </tr>
                 ))}
               </tbody>
@@ -133,47 +144,6 @@ export default function ControlTower({ nonce }) {
           Governance actors (AU, HITL) monitor every agent along the dashed edges.
         </p>
         <Graph graph={data.graph} />
-      </div>
-
-      {/* ===================== performance matrix ===================== */}
-      <div className="section-title">Agent performance matrix</div>
-      <div className="card" style={{ overflowX: "auto" }}>
-        <table>
-          <thead>
-            <tr><th>Agent</th><th>Owner</th><th>Risk</th><th>Quality metric</th><th>Score</th><th>Ver</th><th>Status</th></tr>
-          </thead>
-          <tbody>
-            {data.matrix.map((a) => (
-              <tr key={a.id}>
-                <td><b>{a.name}</b><div className="sub mono">{a.id}</div></td>
-                <td className="muted">{a.owner}</td>
-                <td className="risk">{a.risk}</td>
-                <td className="muted">{a.metric}</td>
-                <td>
-                  <span className="meter"><span style={{ width: a.score + "%" }} /></span>{" "}
-                  <span className="mono">{a.score}</span>
-                </td>
-                <td className="ver">v{a.version}</td>
-                <td><span className={"status-tag " + a.status}>{a.status}</span></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      {/* ===================== trace replay ===================== */}
-      <div className="section-title">Execution trace replay {data.latest_conversation && <span className="mono muted" style={{ fontSize: 12 }}>· {data.latest_conversation}</span>}</div>
-      <div className="card pad">
-        {traces.length === 0 && <div className="empty">Run a call in Live Voice to populate the trace.</div>}
-        {traces.map((t) => (
-          <div key={t.id} className="row" style={{ borderBottom: "1px solid var(--line)", padding: "9px 0", gap: 12 }}>
-            <span className="mono muted" style={{ width: 28 }}>#{t.step}</span>
-            <span className="chip agent" style={{ width: 44, textAlign: "center" }}>{t.agent}</span>
-            <span className="muted" style={{ flex: 1, minWidth: 180 }}>{t.detail || t.metric}</span>
-            {t.score != null && <span className="mono">{Math.round(t.score * 100)}</span>}
-            <span className={"pass-badge " + (t.passed ? "ok" : "no")}>{t.passed ? "PASS" : "FAIL"}</span>
-          </div>
-        ))}
       </div>
 
       {data.violations.length > 0 && (

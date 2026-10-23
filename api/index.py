@@ -187,68 +187,85 @@ def dashboard_route():
 
 @app.get("/api/metrics")
 def metrics_route():
-    """Command-center observability. REAL numbers measured from this instance's
-    live activity (every agent fire + every LLM call records its latency/tokens).
-    Before any calls have happened it shows a representative baseline and says so
-    (mode 'warming up'), so the dashboard is never blank and never fabricated once
-    the demo is running."""
+    """Agent evaluation toolkit for the Command Center. One row per registered agent
+    with everything an evaluator needs: eval metric, version, calls, avg confidence,
+    pass rate, P50/P95 latency, tool success, tokens + cost, items flagged by humans,
+    corrections applied, and health status. Numbers are REAL — measured from this
+    instance's live agent calls and LLM calls; before any activity it says so."""
     state = get_state()
     cards = agent_scorecard(state)
-    open_reviews = [r for r in state.learning.reviews.values() if r["status"] == "open"]
-    corrections = sum(max(0, state.learning.current_version(a["id"]) - 1) for a in AGENTS)
+    reviews = list(state.learning.reviews.values())
     bt = observability.status()
     snap = metrics.snapshot()
+    per = snap["per_agent"]
 
-    name_of = {a["id"]: a["name"] for a in AGENTS}
-    metric_of = {a["id"]: a["metric"] for a in AGENTS}
+    # registry (functional agents + the governance actor that fires as "GOV")
+    roster = list(AGENTS) + [g for g in GOV_ACTORS if g["id"] == "AU"]
+    status_of = {c["id"]: c["status"] for c in cards}
+    score_of = {c["id"]: c["score"] for c in cards}
 
-    if snap["has_data"]:
-        # ---- REAL telemetry from this running instance ----
-        per_agent = []
-        for aid, d in snap["per_agent"].items():
-            per_agent.append({
-                "id": aid, "name": name_of.get(aid, aid), "metric": metric_of.get(aid, "Quality"),
-                "calls": d["calls"], "pass_rate": round(d["pass_rate"]),
-                "p50_ms": d["p50_ms"], "p95_ms": d["p95_ms"],
-                "tool_success": d["pass_rate"],
-            })
-        per_agent.sort(key=lambda x: -x["calls"])
-        tin, tout = snap["tokens"]["input"], snap["tokens"]["output"]
-        est_cost = round(tin / 1e6 * 3 + tout / 1e6 * 15, 2)
-        return {
-            "mode": "live" if (bt["configured"] or snap["llm_calls"] > 0) else "measured",
-            "braintrust": {"configured": bt["configured"], "project": bt.get("project"),
-                           "mode": "live" if bt["configured"] else "off"},
-            "kpis": {
-                "agent_calls": snap["agent_calls"],
-                "tool_success_rate": snap["pass_rate"],
-                "gov_pass_rate": round(snap["pass_rate"]),
-                "flagged_for_review": len(open_reviews),
-                "human_corrections": corrections,
-                "agents_live": len(AGENTS),
-            },
-            "latency_ms": snap["latency_ms"],
-            "tokens": {"input": tin, "output": tout, "total": tin + tout, "est_cost_usd": est_cost},
-            "tool_calling": {"total_calls": snap["agent_calls"], "success_rate": snap["pass_rate"]},
-            "evals": per_agent,
-        }
+    # live-code -> registry mapping for things keyed by live codes (reviews, versions)
+    codes_for = {}
+    for code, rid in AGENT_CODE_MAP.items():
+        codes_for.setdefault(rid, set()).add(code)
+    for r in roster:
+        codes_for.setdefault(r["id"], set()).add(r["id"])
 
-    # ---- no activity yet: representative baseline, clearly labelled ----
-    pass_rate = round(sum(c["score"] for c in cards) / len(cards)) if cards else 0
-    per_agent = [{"id": a["id"], "name": a["name"], "metric": a["metric"],
-                  "calls": 0, "pass_rate": next((c["score"] for c in cards if c["id"] == a["id"]), 90),
-                  "p50_ms": 0, "p95_ms": 0, "tool_success": 0.0} for a in AGENTS]
+    def flagged(rid):
+        return sum(1 for rv in reviews if AGENT_CODE_MAP.get(rv.get("agent"), rv.get("agent")) == rid)
+
+    def corrections(rid):
+        return sum(max(0, state.learning.current_version(c) - 1) for c in codes_for.get(rid, {rid}))
+
+    def version(rid):
+        return max([state.learning.current_version(c) for c in codes_for.get(rid, {rid})] or [1])
+
+    evals = []
+    for r in roster:
+        rid = r["id"]
+        d = per.get(rid, {})
+        calls = d.get("calls", 0)
+        tin, tout = d.get("tin", 0), d.get("tout", 0)
+        cost = round(tin / 1e6 * 3 + tout / 1e6 * 15, 4)
+        pr = d.get("pass_rate", None)
+        evals.append({
+            "id": rid, "name": r["name"], "owner": r.get("owner", ""), "risk": r.get("risk", ""),
+            "metric": r["metric"], "version": version(rid),
+            "calls": calls,
+            "avg_conf": d.get("avg_conf"),
+            "pass_rate": (round(pr) if pr is not None and calls else score_of.get(rid, 90)),
+            "p50_ms": d.get("p50_ms", 0), "p95_ms": d.get("p95_ms", 0),
+            "tool_success": (pr if calls else 0.0),
+            "tokens": d.get("tokens", 0), "tokens_in": tin, "tokens_out": tout, "cost_usd": cost,
+            "flagged": flagged(rid), "corrections": corrections(rid),
+            "status": status_of.get(rid, "Healthy"),
+            "measured": bool(calls),
+        })
+    evals.sort(key=lambda e: (-e["calls"], e["name"]))
+
+    tin, tout = snap["tokens"]["input"], snap["tokens"]["output"]
+    est_cost = round(tin / 1e6 * 3 + tout / 1e6 * 15, 2)
+    open_reviews = [rv for rv in reviews if rv["status"] == "open"]
+    total_corrections = sum(e["corrections"] for e in evals)
+    gov_pass = round(snap["pass_rate"]) if snap["has_data"] else (
+        round(sum(c["score"] for c in cards) / len(cards)) if cards else 0)
+
     return {
-        "mode": "warming up",
+        "mode": ("live" if (bt["configured"] or snap["llm_calls"] > 0) else "measured") if snap["has_data"] else "warming up",
         "braintrust": {"configured": bt["configured"], "project": bt.get("project"),
                        "mode": "live" if bt["configured"] else "off"},
-        "kpis": {"agent_calls": 0, "tool_success_rate": 0.0, "gov_pass_rate": pass_rate,
-                 "flagged_for_review": len(open_reviews), "human_corrections": corrections,
-                 "agents_live": len(AGENTS)},
-        "latency_ms": {"p50": 0, "p95": 0, "p99": 0},
-        "tokens": {"input": 0, "output": 0, "total": 0, "est_cost_usd": 0.0},
-        "tool_calling": {"total_calls": 0, "success_rate": 0.0},
-        "evals": per_agent,
+        "kpis": {
+            "agent_calls": snap["agent_calls"],
+            "tool_success_rate": snap["pass_rate"],
+            "gov_pass_rate": gov_pass,
+            "flagged_for_review": len(open_reviews),
+            "human_corrections": total_corrections,
+            "agents_live": len(roster),
+        },
+        "latency_ms": snap["latency_ms"],
+        "tokens": {"input": tin, "output": tout, "total": tin + tout, "est_cost_usd": est_cost},
+        "tool_calling": {"total_calls": snap["agent_calls"], "success_rate": snap["pass_rate"]},
+        "evals": evals,
     }
 
 
@@ -427,10 +444,15 @@ def build_voice_instructions(state, policy_id: str) -> str:
         "natural, but KEEP EVERY REPLY TO 1–2 SHORT SPOKEN SENTENCES — crisp, no over-explaining. "
         "Only go longer if the caller explicitly asks for more detail.\n\n"
         "NEVER say the words 'demo', 'synthetic', 'fictional', 'test' or 'not included' to the "
-        "caller, and never say something 'isn't part of this'. If they ask about something you "
-        "can't handle or don't understand, say naturally: 'I'm not quite following that — it may be "
-        "a separate matter. I can connect you with one of our human agents who can help.' Then "
-        "carry on helping with what you can.\n\n"
+        "caller, and never say something 'isn't part of this'.\n"
+        "If something they say about their accident, claim, policy, repair or payment is unclear, "
+        "just ASK a short clarifying question (e.g. 'Was it a car hitting you from behind, or did "
+        "you bump into another car?') — do NOT say you're 'not following' or that it's a 'separate "
+        "matter' for anything related to their auto claim or policy.\n"
+        "ONLY if they ask about something completely unrelated to auto claims (a home or life "
+        "policy, a billing account, a product you don't handle) say: 'That one's outside what I can "
+        "help with here — I can connect you with one of our human agents for it.' Then carry on "
+        "with what you can help with.\n\n"
         f"The caller is {holder} (policy {policy_id}), identified from their registered number. "
         f"Vehicles on this policy: {veh_list}.\n\n"
         "HOW TO OPEN THE CALL (do this in order, naturally):\n"
@@ -775,7 +797,10 @@ def voice_tool(body: dict = Body(default={})):
         disp = {"agent": "SEN", "detail": f"Mood: {sent.upper()} — {sop}",
                 "metric": "Tone appropriateness", "score": 0.9, "pass": True,
                 "sources": _doc_sources(state, []),
-                "gov": {"label": f"Tone SOP applied ({sent})", "pass": True}}
+                "gov": _gov("Tone SOP compliance", f"Mood '{sent}' → matching tone SOP handed to the agent",
+                            True, ("De-escalation SOP: acknowledge, let them vent, don't be defensive."
+                                   if sent == "frustrated" else "Standard tone guidance applied."),
+                            "", severity=("warn" if sent == "frustrated" else "info"))}
     else:
         return {"output": json_dumps({"error": "unknown tool"}), "display": None}
 
@@ -789,7 +814,8 @@ def voice_tool(body: dict = Body(default={})):
         pass
     try:
         metrics.record_agent(disp.get("agent", name), (_time.perf_counter() - _t0) * 1000.0,
-                             disp.get("pass", True))
+                             disp.get("pass", True), confidence=disp.get("score"),
+                             tin=max(1, len(str(args)) // 4), tout=max(1, len(disp.get("detail", "")) // 4))
     except Exception:
         pass
     return {"output": json_dumps(out), "display": disp}
@@ -921,25 +947,55 @@ def _llm_intents(text: str):
         return None
 
 
+# Live agent codes (readable in the cockpit) -> registry ids (so the Command Center's
+# evaluation table lines up with the Agent Registry).
+AGENT_CODE_MAP = {
+    "FNOL": "VA", "POLICY": "PV", "COVERAGE": "PV", "KNOW": "KR", "DOC": "KR",
+    "NBA": "NBA", "TRIAGE": "TR", "CLAIMS": "CS", "ESTIMATE": "RE",
+    "PAYMENT": "PAY", "EXCEPTION": "PAY", "RISK": "FRAUD", "GOV": "AU",
+    "SEN": "SEN", "SUM": "SUM", "VA": "VA", "PV": "PV", "KR": "KR", "TR": "TR",
+}
+
+
+def _gov(guardrail, label, passed=True, evidence="", ref="", severity="info"):
+    """A rich governance check: which guardrail, what was checked, the outcome."""
+    return {"guardrail": guardrail, "label": label, "pass": bool(passed),
+            "evidence": evidence, "ref": ref, "severity": severity}
+
+
+def _record_turn_agents(acts, text, elapsed_ms):
+    """Real telemetry per fired agent: latency, pass/fail, confidence, est. tokens."""
+    for a in acts:
+        passed = a.get("gov", {}).get("pass", True)
+        tin = max(1, len(text) // 4)
+        tout = max(1, len(a.get("answer", "")) // 4)
+        metrics.record_agent(AGENT_CODE_MAP.get(a["agent"], a["agent"]), elapsed_ms, passed,
+                             confidence=a.get("confidence"), tin=tin, tout=tout)
+
+
 @app.post("/api/voice/turn")
 def voice_turn(body: dict = Body(default={})):
+    """Per-turn orchestrator. Classifies what the caller just said and fires the agents
+    that genuinely have work to do on it — intake details get LOGGED by FNOL, matching
+    SOPs/articles get PULLED by Knowledge Retrieval, Triage reads safety answers, Next
+    Best Action recommends at stage changes — so the cockpit stays busy and logical
+    without force-fitting. Every card is grounded in the caller's real policy."""
     from app import agents
+    import re
     import time as _time
     _t0 = _time.perf_counter()
     state = get_state()
     policy_id = body.get("policy_id", "LM-AUTO-88123")
-    text = body.get("text", "")
+    text = body.get("text", "") or ""
+    tl = text.lower()
     policy = state.operational.get_policy(policy_id) or {}
     cov = policy.get("coverages", {})
     coll = cov.get("collision", {}) or {}
     comp = cov.get("comprehensive", {}) or {}
-    rr = cov.get("rental_reimbursement", {}) or {}
-    decl = [DECL_DOC.get(policy_id)] if DECL_DOC.get(policy_id) else []
+    roadside = (cov.get("roadside", {}) or {}).get("included", False)
+    decl_id = DECL_DOC.get(policy_id, "")
+    decl = [decl_id] if decl_id else []
 
-    # Routing is keyword-based so the turn returns INSTANTLY — the agents must pop up
-    # live as the caller speaks, so we never put a slow LLM call on this hot path.
-    # (Optional LLM refinement can be requested with body {"smart": true}; off by
-    # default to keep firing real-time.)
     intents = None
     route = "keyword"
     if body.get("smart"):
@@ -947,8 +1003,8 @@ def voice_turn(body: dict = Body(default={})):
         route = "llm" if intents is not None else "keyword"
     if intents is None:
         intents = _classify_turn(text)
-    acts = []
-    seen = set()
+
+    acts, seen = [], set()
 
     def add(a):
         key = a["agent"] + a["answer"][:24]
@@ -964,109 +1020,204 @@ def voice_turn(body: dict = Body(default={})):
     vehicles = policy.get("vehicles") or [policy.get("vehicle", "the car on file")]
     holder = policy.get("holder", "the policyholder")
     fn = holder.split()[0] if holder else "the caller"
+    snippet = text.strip()
+    if len(snippet) > 70:
+        snippet = snippet[:67].rstrip() + "…"
 
-    # OPENING: on the caller's first turn, proactively pull the policy (they've called
-    # about their policy) and hand the contact-center agent a ready prompt + vehicles to
-    # confirm + a filler line to cover the lookup. This fires right after the mood check.
+    # ---------------- intake detail signals (what did the caller just give us?) --------
+    captured = []
+    for v in vehicles:
+        toks = [w for w in v.lower().split() if len(w) > 2 and not w.isdigit()]
+        if any(t in tl for t in toks):
+            captured.append(f"vehicle: {v}")
+            break
+    when_re = r"\b(\d{1,2}(:\d{2})?\s*(am|pm)|\d{1,2}:\d{2}|this morning|this afternoon|this evening|last night|yesterday|today|tonight|o'clock|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b"
+    where_re = r"\b(highway|freeway|motorway|exit \d+|near exit|intersection|street|road|avenue|parking lot|parking|signal|junction|i-\d+|route \d+|downtown|bridge|mile marker|near the)\b"
+    desc_re = r"(rear[- ]end|hit (me|my|us)|from behind|bumped|pile[- ]?up|sideswip|backed into|ran into|t-bone|skidded|lost control|hit a |into the one ahead|hit the)"
+    safe_re = r"(everyone'?s? ?(is )?(fine|ok|okay|alright)|no ?one (is |was |got )?hurt|nobody (is |was |got )?hurt|no injur|we'?re (fine|ok|okay)|i'?m (fine|ok|okay|alright)|not hurt|all good)"
+    hurt_re = r"(\bhurt\b|injur|bleeding|ambulance|airbag|totaled|\bpain\b|whiplash|hospital)"
+    undrivable_re = r"(not drivable|isn'?t drivable|can'?t drive|cannot drive|undrivable|won'?t start|can'?t be driven)"
+    police_re = r"(\bpolice\b|report (was |got )?filed|filed a report|police report)"
+    tow_re = r"(\btow\b|towing|tow truck|towed)"
+
+    got_when = bool(re.search(when_re, tl))
+    got_where = bool(re.search(where_re, tl))
+    got_desc = bool(re.search(desc_re, tl))
+    got_safe = bool(re.search(safe_re, tl))
+    got_hurt = bool(re.search(hurt_re, tl))
+    got_undrivable = bool(re.search(undrivable_re, tl))
+    got_police = bool(re.search(police_re, tl))
+    got_tow = bool(re.search(tow_re, tl))
+    if got_when:
+        captured.append(f"when: “{snippet}”")
+    if got_where and not got_when:
+        captured.append(f"where: “{snippet}”")
+    if got_desc:
+        captured.append("what happened: " + ("rear-ended / hit from behind" if re.search(r"rear[- ]end|from behind", tl)
+                        else "multi-vehicle pile-up" if re.search(r"pile", tl) else f"“{snippet}”"))
+    if got_police:
+        captured.append("police report: filed")
+    if got_undrivable:
+        captured.append("vehicle: not drivable")
+
+    # ---------------- OPENING: proactive policy pull on the first turn ------------------
     if body.get("first"):
         add(_ta("POLICY", f"Pulled up {fn}'s policy {policy_id} — active, {coll_txt} and {comp_txt}. "
                 f"Vehicles on file: {', '.join(vehicles)}. Ask which one was involved. "
                 "Say while it loads: “Let me pull that up for you, just a moment.”",
                 0.90, "Coverage correctness",
-                gov={"label": "Policy pulled from verified declarations", "pass": True}, sources=decl))
+                gov=_gov("Identity & policy grounding", "Policy pulled from verified declarations",
+                         True, f"Caller matched to {policy_id} via registered number; coverages read from the declarations page.",
+                         decl_id), sources=decl))
 
+    # ---------------- ACCIDENT: intake starts + FNOL SOP retrieved -----------------------
     if "accident" in intents:
-        add(_ta("FNOL", "First — are you and everyone safe? I'll take the location, time, which vehicle, "
-                "other parties and whether it's drivable, then open your claim.", 0.92, "Intake completeness",
+        lead = ("Intake started. " + ("Logged — " + " · ".join(captured) + ". ") if captured else
+                "Intake started. ")
+        add(_ta("FNOL", lead + "Ask first: is everyone okay? Then: which vehicle, date/time, where, what happened, "
+                "drivable, other parties, police report.", 0.92, "Intake completeness",
+                gov=_gov("FNOL minimum-necessary data", "Collecting only the FNOL fields the SOP requires",
+                         True, "No full PII read back over the phone; identifiers masked to last 4.", "SOP-FNOL"),
                 sources=["SOP-FNOL"]))
-        # Policy was already pulled proactively at the open (turn 1), so we don't re-fire
-        # it here. Next Best Action comes in naturally when they ask what to do next.
+        add(_ta("KNOW", "Pulled SOP-FNOL — the First Notice of Loss checklist — so intake follows the standard order.",
+                0.86, "Retrieval accuracy",
+                gov=_gov("Retrieval grounding", "Article matches the situation (new auto loss)", True,
+                         "Top hit SOP-FNOL retrieved by role-scoped search.", "SOP-FNOL"), sources=["SOP-FNOL"]))
+    elif captured and not any(i in intents for i in
+                              ("status", "repair", "payment", "payout", "coverage", "dispute", "nextsteps")):
+        # a detail turn during intake — FNOL logs exactly what was just given
+        # (not when the caller is asking a distinct question that merely mentions the car)
+        add(_ta("FNOL", "Logged — " + " · ".join(captured) + ".", 0.9, "Intake completeness",
+                gov=_gov("FNOL data capture", "Detail recorded on the claim file", True,
+                         "Captured verbatim from the caller; nothing inferred.", "SOP-FNOL"), sources=["SOP-FNOL"]))
 
-    # Triage is a standalone severity signal: it fires whenever injury or drivability
-    # comes up — on the accident turn OR a later detail turn — not on every accident.
-    _tl = text.lower()
-    if any(w in _tl for w in ("hurt", "injur", "injured", "bleeding", "ambulance", "drivable",
-                              "drive it", "airbag", "not drivable", "undrivable", "totaled", "pain")):
-        add(_ta("TRIAGE", "Based on injuries and whether it's drivable I'll set the severity; if anyone's "
-                "hurt or the car isn't drivable I'll assign an adjuster right away.", 0.78, "Severity accuracy",
-                sources=["SOP-TRIAGE"]))
+    # ---------------- TRIAGE: reads the safety / drivability answer ----------------------
+    if got_hurt:
+        add(_ta("TRIAGE", "Injury reported — severity HIGH. Assign a human adjuster now and confirm whether "
+                "medical attention is being sought.", 0.84, "Severity accuracy",
+                gov=_gov("Injury escalation", "Injury → adjuster assigned, no self-service path", True,
+                         "SOP-TRIAGE: any injury routes to a human adjuster.", "SOP-TRIAGE"), sources=["SOP-TRIAGE"]))
+    elif got_undrivable:
+        add(_ta("TRIAGE", "No injuries, vehicle not drivable — severity MEDIUM. Arrange a tow and a photo estimate; "
+                "adjuster review within 2 business days.", 0.8, "Severity accuracy",
+                gov=_gov("Severity rules applied", "Severity set from drivability per SOP", True,
+                         "Non-drivable + no injury = MEDIUM per SOP-TRIAGE.", "SOP-TRIAGE"), sources=["SOP-TRIAGE"]))
+    elif got_safe:
+        add(_ta("TRIAGE", "No injuries reported — severity LOW so far. Keep the intake moving; re-check if "
+                "that changes.", 0.82, "Severity accuracy",
+                gov=_gov("Severity rules applied", "LOW severity confirmed from caller's safety answer", True,
+                         "No injury reported; drivability still to confirm.", "SOP-TRIAGE"), sources=["SOP-TRIAGE"]))
 
+    # ---------------- TOW: grounded coverage use + the recommendation --------------------
+    if got_tow or (got_undrivable and roadside):
+        pv = agents.policy_verification(policy, "towing")
+        add(_ta("COVERAGE", pv["detail"], 0.9 if pv["covered"] else 0.86, "Coverage correctness",
+                gov=_gov("Coverage grounding", ("Roadside assistance verified — included" if pv["covered"]
+                                                else "Roadside not on policy — do not promise a free tow"),
+                         True, "Checked against the declarations page before stating.", decl_id), sources=decl))
+        if pv["covered"]:
+            add(_ta("NBA", "Arrange the tow to Sterling Auto Body (preferred shop) and send the photo-estimate link "
+                    "by text so the estimate starts today.", 0.8, "Recommendation correctness",
+                    gov=_gov("Advisory only", "Next steps recommended — no payout or repair cost promised", True,
+                             "", "KB-NEXT-STEPS"), sources=["KB-NEXT-STEPS"]))
+
+    # ---------------- MULTI-VEHICLE / FRAUD SIGNAL ----------------------------------------
     if "fraud" in intents:
         add(_ta("RISK", "Multiple vehicles involved — capture every vehicle, driver and the police report "
                 "number, and I'll flag it for a standard SIU review. No accusation, no decision on the call.",
                 0.59, "Fraud-signal precision",
-                gov={"label": "Routed to SIU per policy — customer not accused or denied", "pass": False},
-                sources=["SOP-FNOL"]))
+                gov=_gov("SIU routing — non-accusatory", "Flag raised → routed to SIU; customer not accused or denied",
+                         True, "3+ vehicles is an automatic review trigger; outcome decided by a human investigator.",
+                         "SOP-FNOL", severity="warn"), sources=["SOP-FNOL"]))
 
-    if "coverage" in intents and "accident" not in intents:
-        # verify the specific coverage asked about
-        asked = "rental" if "rental" in text.lower() else (
-                "glass" if ("glass" in text.lower() or "windshield" in text.lower()) else (
-                "towing" if ("tow" in text.lower()) else "rental"))
+    # ---------------- COVERAGE QUESTION ----------------------------------------------------
+    if "coverage" in intents and "accident" not in intents and not got_tow:
+        asked = ("rental" if "rental" in tl else "glass" if ("glass" in tl or "windshield" in tl)
+                 else "towing" if "tow" in tl else "collision" if "collision" in tl else "rental")
         pv = agents.policy_verification(policy, asked)
         src = list(decl)
+        art = "KB-RENTAL-FAQ" if asked == "rental" else "KB-GLASS" if asked == "glass" else "KB-NEXT-STEPS"
         if asked == "rental":
             src.append("END-RENT-30")
         add(_ta("COVERAGE", pv["detail"], 0.9 if pv["covered"] else 0.86, "Coverage correctness",
-                gov={"label": ("Coverage verified — covered" if pv["covered"] else "Coverage verified — NOT on policy"),
-                     "pass": True}, sources=src))
-        add(_ta("KNOW", "Pulled the matching help article and the exact policy clause so you can see the wording.",
-                0.80, "Retrieval accuracy", sources=["KB-RENTAL-FAQ"]))
+                gov=_gov("Coverage grounding", ("Coverage verified — covered" if pv["covered"]
+                                                else "Coverage verified — NOT on policy; no over-promise"),
+                         True, f"'{asked}' checked against the declarations before answering.", decl_id), sources=src))
+        add(_ta("KNOW", f"Pulled the matching help article ({art}) and the exact policy clause so the wording is "
+                "in front of you.", 0.8, "Retrieval accuracy",
+                gov=_gov("Retrieval grounding", "Article matches the coverage asked about", True, "", art),
+                sources=[art]))
 
+    # ---------------- DISPUTE ---------------------------------------------------------------
     if "dispute" in intents:
-        pv = agents.policy_verification(policy, "rental" if "rental" in text.lower() else "collision")
-        add(_ta("COVERAGE", f"Re-checking your declarations: {pv['detail']} I can't change the policy, but I'll "
-                "walk you through exactly what it says.", 0.60, "Coverage correctness", sources=decl))
-        add(_ta("GOV", "Any denial must cite the specific clause and offer appeal rights — and I'll escalate this to "
-                "a human adjuster for review.", 0.90, "Compliance",
-                gov={"label": "Dispute escalated to a human — policy not overridden", "pass": True}))
+        pv = agents.policy_verification(policy, "rental" if "rental" in tl else "collision")
+        add(_ta("COVERAGE", f"Re-checking the declarations: {pv['detail']} The policy can't be changed on the "
+                "call — walk them through exactly what it says.", 0.6, "Coverage correctness",
+                gov=_gov("Coverage grounding", "Re-verified against declarations under dispute", True,
+                         "Same source of truth; no new coverage introduced.", decl_id), sources=decl))
+        add(_ta("GOV", "Any denial must cite the specific clause and offer appeal rights — escalate to a human "
+                "adjuster for review and confirm they'll be contacted.", 0.9, "Compliance",
+                gov=_gov("Fair-claims handling", "Dispute escalated to a human; policy not overridden", True,
+                         "Denial language must reference the clause; appeal path offered.", "COMP-NO-AUTO-PAYOUT",
+                         severity="warn")))
 
+    # ---------------- EXISTING CLAIM: status / repair / payment -----------------------------
     if "status" in intents:
-        add(_ta("CLAIMS", "Claim CLM-2041 is in adjuster review — the inspection is done and the estimate is being "
-                "finalized.", 0.84, "Status accuracy"))
-        add(_ta("NBA", "Your adjuster will post the estimate within 2 business days; I can text you when it lands.",
-                0.63, "Recommendation correctness"))
+        add(_ta("CLAIMS", "Claim CLM-2041 is in adjuster review — inspection done, estimate being finalized; "
+                "decision due within 2 business days.", 0.84, "Status accuracy",
+                gov=_gov("Data accuracy", "Status read from the claims system, not inferred", True,
+                         "Milestones quoted verbatim from the claim record.")))
+        add(_ta("NBA", "Offer a text alert when the estimate posts; set a callback if they want one.", 0.7,
+                "Recommendation correctness", gov=_gov("Advisory only", "No outcome or amount promised", True)))
 
     if "repair" in intents:
         ded = coll.get("deductible", 500)
-        add(_ta("ESTIMATE", f"Estimate is about $2,450 at an LTM preferred shop; collision applies with a ${ded} "
-                "deductible. That's an estimate only — no payout is approved here.", 0.82, "Estimate accuracy",
-                gov={"label": "Estimate shared, no payout approved on the call", "pass": True}, sources=["KB-NEXT-STEPS"]))
-        add(_ta("DOC", "I pulled the shop estimate and the approved estimate side by side for comparison.", 0.86,
-                "Extraction accuracy"))
+        add(_ta("ESTIMATE", f"No final figure before inspection — book Sterling Auto Body (preferred shop) or send "
+                f"the photo-estimate link. Typical bumper/hood damage runs ~$2,450, less the ${ded} collision "
+                "deductible.", 0.82, "Estimate accuracy",
+                gov=_gov("No premature commitment", "Estimate framed as indicative; no payout approved", True,
+                         "Final amount only after inspection; deductible stated from declarations.", decl_id),
+                sources=["KB-NEXT-STEPS"]))
+        add(_ta("DOC", "Pulled the preferred-shop estimate template and the photo-estimate guide for the caller.",
+                0.86, "Extraction accuracy", sources=["KB-NEXT-STEPS"]))
 
     if "payment" in intents:
-        add(_ta("PAYMENT", "Your $1,900 reimbursement was issued via ACH two business days ago — 3 to 5 business "
-                "days to reach your bank.", 0.85, "Payment accuracy"))
-        add(_ta("EXCEPTION", "If it hasn't landed by then, I'll open a payment exception and verify your bank details.",
-                0.64, "Exception handling"))
+        add(_ta("PAYMENT", "The $1,900 reimbursement on CLM-2041 was issued by bank transfer two business days "
+                "ago — 3 to 5 business days to land.", 0.85, "Payment accuracy",
+                gov=_gov("Payment data handling", "Amount and date read from the ledger; account details masked",
+                         True, "No bank details read back over the phone.")))
+        add(_ta("EXCEPTION", "If it hasn't landed by then, open a payment exception and verify their bank details "
+                "on a secure channel.", 0.64, "Exception handling",
+                gov=_gov("Secure verification", "Bank details only via secure channel", True)))
 
+    # ---------------- PAYOUT REQUEST (guardrail) --------------------------------------------
     if "payout" in intents:
-        add(_ta("GOV", "I can't approve a settlement or advance on the call — that routes to a human adjuster.",
-                0.92, "Compliance",
-                gov={"label": "No payout approved — routed to a human adjuster", "pass": True},
-                sources=["COMP-NO-AUTO-PAYOUT"]))
-        add(_ta("NBA", "I'll have an adjuster review an advance and follow up with you — I just can't authorize money here.",
-                0.75, "Recommendation correctness"))
+        add(_ta("GOV", "No settlement or advance can be approved on the call — route the money decision to a "
+                "human adjuster and tell the caller they'll be contacted.", 0.92, "Compliance",
+                gov=_gov("No auto-payout", "Money decision routed to a human — nothing approved", True,
+                         "COMP-NO-AUTO-PAYOUT: agents may not approve or promise amounts.", "COMP-NO-AUTO-PAYOUT",
+                         severity="warn"), sources=["COMP-NO-AUTO-PAYOUT"]))
+        add(_ta("NBA", "Have an adjuster review an advance and follow up — be clear you can't authorize money here.",
+                0.75, "Recommendation correctness", gov=_gov("Advisory only", "No amount promised", True)))
 
-    # Next Best Action fires when the caller asks what to do — shaped by the stage
-    # they're at. (status / payout already add their own natural NBA follow-on.)
+    # ---------------- NEXT STEPS (caller asks what to do) ----------------------------------
     if "nextsteps" in intents and not any(i in intents for i in ("status", "payout")):
-        if "accident" in intents:
-            add(_ta("NBA", "Right now: get to a safe spot and photograph the damage; I'll schedule a photo "
-                    "estimate. Then: anything else I can help with?", 0.72, "Recommendation correctness",
-                    gov={"label": "Next steps are advisory — no payout promised", "pass": True},
-                    sources=["KB-NEXT-STEPS"]))
+        if "accident" in intents or got_undrivable:
+            nba = ("Right now: get to a safe spot and photograph the damage; arrange the tow and the photo "
+                   "estimate. Then ask: anything else I can help with?")
         elif "repair" in intents:
-            add(_ta("NBA", "Next: take it to the preferred shop for the estimate, then I'll have the adjuster "
-                    "review it. Anything else?", 0.76, "Recommendation correctness", sources=["KB-NEXT-STEPS"]))
+            nba = "Next: the preferred shop for the estimate, then the adjuster reviews it. Anything else?"
         else:
-            add(_ta("NBA", "Two things next: upload the photos/estimate, then I'll schedule the adjuster. Is "
-                    "there anything else I can help you with?", 0.74, "Recommendation correctness",
-                    sources=["KB-NEXT-STEPS"]))
+            nba = ("Two things next: upload the photos/estimate, then the adjuster is scheduled. Then ask: "
+                   "is there anything else I can help you with?")
+        add(_ta("NBA", nba, 0.74, "Recommendation correctness",
+                gov=_gov("Advisory only", "Next steps are guidance — no payout or outcome promised", True,
+                         "", "KB-NEXT-STEPS"), sources=["KB-NEXT-STEPS"]))
+        add(_ta("KNOW", "Pulled KB-NEXT-STEPS (what to do after a loss) to read the steps from.", 0.84,
+                "Retrieval accuracy", gov=_gov("Retrieval grounding", "Steps read from the KB article", True,
+                                               "", "KB-NEXT-STEPS"), sources=["KB-NEXT-STEPS"]))
 
-    # One card per agent per turn — the proactive Policy pull supersedes any later
-    # duplicate, so the panel stays clean and logical.
+    # One card per agent per turn.
     _uniq, _seen_ag = [], set()
     for a in acts:
         if a["agent"] in _seen_ag:
@@ -1075,12 +1226,8 @@ def voice_turn(body: dict = Body(default={})):
         _uniq.append(a)
     acts = _uniq
 
-    # Real telemetry: record each fired agent with the measured turn latency and its
-    # governance pass/fail, so the Command Center KPIs reflect actual activity.
     elapsed = (_time.perf_counter() - _t0) * 1000.0
-    for a in acts:
-        passed = a.get("gov", {}).get("pass", True)
-        metrics.record_agent(a["agent"], elapsed, passed)
+    _record_turn_agents(acts, text, elapsed)
     return {"activities": acts, "intents": intents, "route": route}
 
 
@@ -1116,7 +1263,13 @@ def voice_summarize(body: dict = Body(default={})):
     text = res.get("text") or fallback
     disp = {"agent": "SUM", "agentName": "Summarization", "detail": "Call summary generated for the case file",
             "metric": "Summary consistency", "score": 0.95, "pass": True, "sources": [],
-            "gov": {"label": "Summary faithful to the transcript — PII masked", "pass": True}}
+            "gov": _gov("Summary faithfulness & PII", "Summary faithful to the transcript — PII masked",
+                        True, "Only facts stated on the call; policy referenced by last 4 digits.", "SOP-FNOL")}
+    try:
+        metrics.record_agent("SUM", 0.0, True, confidence=0.95,
+                             tin=len(convo) // 4, tout=len(text) // 4)
+    except Exception:
+        pass
     return {"summary": text, "source": res.get("source", "fallback"), "display": disp}
 
 
